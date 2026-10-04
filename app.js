@@ -685,6 +685,11 @@ function viewImpostazioni(v) {
     </div>
 
     <div class="card">
+      <h2>Uso senza internet</h2>
+      <p class="muted" id="statoOffline">Verifica in corso…</p>
+    </div>
+
+    <div class="card">
       <h2>Installa sul telefono</h2>
       <p class="muted">Su Android (Chrome): menu &#8942; &rarr; <b>Installa app</b> / <b>Aggiungi a schermata Home</b>.<br>
       Su iPhone (Safari): tasto Condividi &rarr; <b>Aggiungi alla schermata Home</b>.</p>
@@ -764,6 +769,7 @@ function viewImpostazioni(v) {
       alert('Impossibile importare: ' + err.message);
     }
   });
+  verificaOffline();
 }
 
 /* ---------------- PDF ---------------- */
@@ -1027,12 +1033,49 @@ async function salvaSuDrive(r) {
   render();
 }
 
+/* ---------------- Offline ---------------- */
+
+const FILE_ESSENZIALI = ['index.html', 'app.js', 'style.css', 'lib/jspdf.umd.min.js', 'lib/jspdf.plugin.autotable.min.js'];
+
+async function verificaOffline() {
+  const el = $('#statoOffline');
+  if (!el) return;
+  let msg;
+  if (!('serviceWorker' in navigator) || !('caches' in window)) {
+    msg = '&#10060; Questo browser non supporta l\'uso offline.';
+  } else if (!location.protocol.startsWith('http')) {
+    msg = '&#10060; L\'app è aperta come file: per l\'uso offline va aperta dal suo indirizzo web (es. GitHub Pages).';
+  } else {
+    const mancanti = [];
+    for (const f of FILE_ESSENZIALI) {
+      if (!(await caches.match(new URL(f, location.href).href, { ignoreSearch: true }))) mancanti.push(f);
+    }
+    const attivo = !!navigator.serviceWorker.controller;
+    msg = !mancanti.length && attivo
+      ? '&#9989; Pronta: l\'app funziona anche senza internet (solo il salvataggio su Google Drive richiede la connessione).'
+      : !mancanti.length
+        ? '&#9203; Quasi pronta: chiudi e riapri l\'app una volta con internet.'
+        : '&#9888;&#65039; Copia offline non ancora completa: apri l\'app con internet e attendi qualche secondo, poi ricontrolla qui.';
+  }
+  el.innerHTML = msg;
+}
+
+function aggiornaBadgeOffline() {
+  $('#offline').classList.toggle('hidden', navigator.onLine);
+}
+window.addEventListener('online', aggiornaBadgeOffline);
+window.addEventListener('offline', aggiornaBadgeOffline);
+
 /* ---------------- Avvio ---------------- */
 
 history.replaceState({}, '');
 render();
+aggiornaBadgeOffline();
 
 if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-  navigator.serviceWorker.register('sw.js').catch(console.warn);
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+    .then(reg => { if (navigator.onLine) reg.update().catch(() => {}); })
+    .catch(console.warn);
+  navigator.serviceWorker.addEventListener('controllerchange', () => verificaOffline());
 }
