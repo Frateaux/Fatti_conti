@@ -36,8 +36,10 @@ function defaultState() {
     azienda: { ragioneSociale: '', indirizzo: '', piva: '', cf: '', telefono: '', email: '', notaPdf: '' },
     fornitori: [],   // {id, nome, indirizzo, piva, telefono, email}
     merci: [],       // {id, nome, prezzo, storico:[{dal, prezzo}]}
-    ritiri: [],      // {id, numero, anno, data, fornitoreId, fornitoreSnap, righe:{merceId:{nome,prezzo}}, pesate:[{id,merceId,peso,ora}], note, chiuso, pdfSalvato, creato}
-    contatori: {},   // {anno: ultimoNumero}
+    ritiri: [],      // {id, numero, anno, data, fornitoreId, fornitoreSnap, righe:{merceId:{nome,prezzo}}, pesate:[{id,merceId,peso,ora}], note, chiuso, generaleId, pdfSalvato, creato}
+    generali: [],    // {id, numero, anno, fornitoreId, fornitoreSnap, creata, acconti:[{id,data,importo,note}], saldo:{data,importo,note}|null, chiusa, pdfSalvato, driveFileId, driveLink}
+    contatori: {},   // {anno: ultimoNumero} pro forma
+    contatoriGen: {},// {anno: ultimoNumero} fatture generali
     ultimoFornitore: null,
     drive: { clientId: '', cartella: 'Fatti Conti - Pro Forma', perFornitore: true }
   };
@@ -59,9 +61,81 @@ function save() {
 
 const getMerce = id => S.merci.find(m => m.id === id);
 const getRitiro = id => S.ritiri.find(r => r.id === id);
+const getGenerale = id => S.generali.find(g => g.id === id);
 function fornitoreDi(r) {
   return S.fornitori.find(f => f.id === r.fornitoreId) || r.fornitoreSnap || { nome: '(fornitore eliminato)' };
 }
+
+/* ---------------- Fatture generali ---------------- */
+
+const numGen = g => `G${g.numero}/${g.anno}`;
+
+/** Restituisce la fattura generale aperta del fornitore (se crea=true la crea se manca) */
+function generaleAperta(fornitoreId, crea = false) {
+  let g = S.generali.find(x => x.fornitoreId === fornitoreId && !x.chiusa);
+  if (!g && crea) {
+    const anno = today().slice(0, 4);
+    S.contatoriGen[anno] = (S.contatoriGen[anno] || 0) + 1;
+    const f = S.fornitori.find(x => x.id === fornitoreId);
+    g = {
+      id: uid(), numero: S.contatoriGen[anno], anno, fornitoreId, fornitoreSnap: f ? { ...f } : null,
+      creata: today(), acconti: [], saldo: null, chiusa: false, pdfSalvato: null, driveFileId: null, driveLink: null
+    };
+    S.generali.push(g);
+  }
+  return g || null;
+}
+
+const ritiriDi = g => S.ritiri.filter(r => r.generaleId === g.id)
+  .sort((a, b) => a.data.localeCompare(b.data) || a.numero - b.numero);
+
+/** Ritiro saldato = appartiene a una generale chiusa (bloccato) */
+function generaleSaldata(r) {
+  const g = r.generaleId && getGenerale(r.generaleId);
+  return g && g.chiusa ? g : null;
+}
+
+/** Elimina una generale aperta vuota (senza pro forma né acconti) */
+function rimuoviSeVuota(g) {
+  if (g && !g.chiusa && !ritiriDi(g).length && !g.acconti.length) S.generali = S.generali.filter(x => x !== g);
+}
+
+function calcolaGenerale(g) {
+  const ritiri = ritiriDi(g).map(r => ({ r, c: calcola(r) }));
+  const perMerce = new Map();
+  let totale = 0, colli = 0, kg = 0;
+  for (const { c } of ritiri) {
+    totale += c.totale; colli += c.colli; kg += c.kg;
+    for (const riga of c.righe) {
+      const k = riga.nome + '|' + riga.prezzo;
+      const m = perMerce.get(k) || { nome: riga.nome, prezzo: riga.prezzo, colli: 0, kg: 0 };
+      m.colli += riga.pesate.length; m.kg += riga.kg;
+      perMerce.set(k, m);
+    }
+  }
+  const merci = [...perMerce.values()].sort((a, b) => a.nome.localeCompare(b.nome) || a.prezzo - b.prezzo);
+  merci.forEach(m => { m.kg = round3(m.kg); m.importo = round2(m.kg * m.prezzo); });
+  const acconti = [...g.acconti].sort((a, b) => a.data.localeCompare(b.data));
+  const totAcconti = round2(acconti.reduce((s, a) => s + a.importo, 0));
+  totale = round2(totale);
+  const saldo = g.saldo ? round2(g.saldo.importo) : 0;
+  return { ritiri, merci, acconti, totale, colli, kg: round3(kg), totAcconti, saldo, residuo: round2(totale - totAcconti - saldo) };
+}
+
+/** Collega alla generale aperta tutte le pro forma che non ne hanno una (dati vecchi / import) */
+function migra() {
+  S.generali = S.generali || [];
+  S.contatoriGen = S.contatoriGen || {};
+  let cambiato = false;
+  for (const r of [...S.ritiri].sort((a, b) => a.data.localeCompare(b.data))) {
+    if (!r.generaleId || !getGenerale(r.generaleId)) {
+      r.generaleId = generaleAperta(r.fornitoreId, true).id;
+      cambiato = true;
+    }
+  }
+  if (cambiato) save();
+}
+migra();
 
 /** Calcola righe (per merce), totali e colli di un ritiro */
 function calcola(r) {
@@ -149,46 +223,53 @@ async function condividiFile(blob, nome, tipo) {
 
 /* ---------------- Navigazione ---------------- */
 
-const nav = { tab: 'ritiri', ritiroId: null, filtroForn: '' };
+const nav = { tab: 'ritiri', stack: [], filtroForn: '' };
 let selMerce = null;
 
 function setTitle(t) { $('#title').textContent = t; }
 
+function apri(tipo, id) {
+  nav.stack.push({ tipo, id });
+  history.pushState({ livello: nav.stack.length }, '');
+  render();
+  window.scrollTo(0, 0);
+}
+
 function apriRitiro(id) {
-  nav.ritiroId = id;
   const r = getRitiro(id);
   const last = r.pesate[r.pesate.length - 1];
   selMerce = last ? last.merceId : (S.merci[0]?.id || null);
-  history.pushState({ ritiro: id }, '');
+  apri('ritiro', id);
+}
+
+const apriGenerale = id => apri('generale', id);
+
+/** Cambia scheda chiudendo eventuali dettagli aperti */
+function vaiTab(tab) {
+  const n = nav.stack.length;
+  nav.stack = [];
+  nav.tab = tab;
+  if (n) history.go(-n);
   render();
   window.scrollTo(0, 0);
 }
 
-function chiudiDettaglio() {
-  nav.ritiroId = null;
-  render();
-}
-
-window.addEventListener('popstate', () => { if (nav.ritiroId) chiudiDettaglio(); });
+window.addEventListener('popstate', () => { if (nav.stack.length) { nav.stack.pop(); render(); } });
 $('#btnBack').addEventListener('click', () => history.back());
 
-$$('.tabbar button').forEach(b => b.addEventListener('click', () => {
-  if (nav.ritiroId) { nav.ritiroId = null; history.back(); }
-  nav.tab = b.dataset.tab;
-  render();
-  window.scrollTo(0, 0);
-}));
+$$('.tabbar button').forEach(b => b.addEventListener('click', () => vaiTab(b.dataset.tab)));
 
 function render() {
   $$('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === nav.tab));
-  $('#btnBack').classList.toggle('hidden', !nav.ritiroId);
+  $('#btnBack').classList.toggle('hidden', !nav.stack.length);
   const v = $('#view');
-  if (nav.ritiroId) {
-    const r = getRitiro(nav.ritiroId);
-    if (r) return viewRitiro(v, r);
-    nav.ritiroId = null;
+  while (nav.stack.length) {
+    const top = nav.stack[nav.stack.length - 1];
+    if (top.tipo === 'ritiro') { const r = getRitiro(top.id); if (r) return viewRitiro(v, r); }
+    if (top.tipo === 'generale') { const g = getGenerale(top.id); if (g) return viewGenerale(v, g); }
+    nav.stack.pop();
   }
-  ({ ritiri: viewRitiri, merci: viewMerci, fornitori: viewFornitori, impostazioni: viewImpostazioni })[nav.tab](v);
+  ({ ritiri: viewRitiri, conti: viewConti, merci: viewMerci, fornitori: viewFornitori, impostazioni: viewImpostazioni })[nav.tab](v);
 }
 
 /* ---------------- Vista: elenco ritiri ---------------- */
@@ -215,10 +296,12 @@ function viewRitiri(v) {
     h += list.map(r => {
       const c = calcola(r);
       totLista += c.totale;
+      const gs = generaleSaldata(r);
       return `<div class="list-item" data-id="${r.id}">
         <div class="main">
           <div class="title">${esc(fornitoreDi(r).nome)}
-            <span class="badge ${r.chiuso ? 'closed' : 'open'}">${r.chiuso ? 'chiuso' : 'aperto'}</span>
+            ${gs ? `<span class="badge closed">&#128274; saldata</span>`
+              : `<span class="badge ${r.chiuso ? 'closed' : 'open'}">${r.chiuso ? 'chiuso' : 'aperto'}</span>`}
             ${r.pdfSalvato ? '<span class="badge">PDF</span>' : ''}</div>
           <div class="sub">N. ${r.numero}/${r.anno} · ${fmtDate(r.data)} · ${c.colli} colli · ${fmtKg(c.kg)} kg</div>
         </div>
@@ -255,6 +338,7 @@ function nuovoRitiro() {
         fornitoreId: d.fornitoreId, fornitoreSnap: { ...f },
         righe: {}, pesate: [], note: '', chiuso: false, pdfSalvato: null, creato: Date.now()
       };
+      r.generaleId = generaleAperta(d.fornitoreId, true).id;
       S.ritiri.push(r);
       S.ultimoFornitore = d.fornitoreId;
       save();
