@@ -30,18 +30,51 @@ Per i fornitori che vengono saldati periodicamente o a scaglioni diversi:
   - Sulla fattura generale e su ciascuna pro forma viene registrato il riferimento al saldo.
   - Eventuali altre fatture generali dello stesso fornitore rimangono indipendenti e aperte fino al loro rispettivo saldo.
 
-### 4. Salvataggio su Google Drive
+### 4. Sincronizzazione Cloud (Supabase, 100% gratuita e privata)
+- **Tempo reale tra PC e Smartphone**: ogni dato inserito sul telefono compare automaticamente sul computer (e viceversa).
+- **Crittografia e sicurezza RLS (Row Level Security)**: i dati sono protetti e accessibili solo ed esclusivamente dopo il login con la tua email e password. Nessuno su GitHub può visualizzarli.
+- **Funzionamento offline preservato**: se non c'è connessione (es. in stalla o magazzino), l'app salva tutto localmente e sincronizza in background non appena il segnale ritorna.
+
+### 5. Protezione & Blocco App (Impronta, Viso o PIN)
+- **WebAuthn**: possibilità di bloccare l'apertura dell'applicazione con sensore biometrico (**Face ID**, **Impronta digitale** o **Windows Hello**).
+- **PIN o Password di riserva**: per sbloccare l'app anche sui dispositivi sprovvisti di sensore biometrico.
+
+### 6. Salvataggio su Google Drive
 - Pulsante diretto **Salva PDF su Google Drive**: archivia i documenti nella cartella dedicata (con sottocartelle ordinate per fornitore).
 - Possibilità di salvare in un colpo solo sia la fattura generale che tutte le singole pro forma incluse.
 - Tasto di condivisione classica del telefono (WhatsApp, Drive, Email, Stampa) sempre disponibile come alternativa.
 
-### 5. Utilizzo Offline (PWA)
+### 7. Utilizzo Offline (PWA)
 - L'app salva tutti i file necessari nella memoria del dispositivo.
 - Si apre e funziona regolarmente anche in stalla o in magazzino senza segnale.
-- I dati inseriti restano memorizzati sul telefono e, appena torna la linea, i PDF possono essere inviati a Google Drive.
-- In **Impostazioni** è sempre disponibile la funzione **Backup / Ripristino** dei dati.
+- I dati inseriti restano memorizzati sul telefono e, appena torna la linea, i PDF possono essere inviati a Google Drive e il cloud si aggiorna da solo.
+- In **Impostazioni** è sempre disponibile anche la funzione **Backup / Ripristino** manuale dei dati.
 
 ---
+
+## Configurazione del Database Cloud Gratuito (Supabase)
+
+1. Vai su [supabase.com](https://supabase.com) e registrati gratis (con email o account GitHub/Google).
+2. Premi **New Project**, dagli un nome (es. `fatti-conti`) e imposta una password per il database.
+3. Vai in **Project Settings** (icona ingranaggio) &rarr; **API**:
+   - Copia il **Project URL** (es. `https://xyz.supabase.co`).
+   - Copia la chiave **Project API keys** &rarr; `anon` `public`.
+4. Vai nella sezione **SQL Editor** a sinistra, incolla ed esegui questo script di sicurezza:
+   ```sql
+   create table if not exists app_state (
+     user_id uuid primary key references auth.users(id) on delete cascade,
+     data jsonb not null,
+     updated_at timestamptz not null default now()
+   );
+
+   alter table app_state enable row level security;
+
+   create policy "Accesso riservato solo al proprietario"
+     on app_state for all
+     using (auth.uid() = user_id)
+     with check (auth.uid() = user_id);
+   ```
+5. Nell'app, apri **Impostazioni** &rarr; inserisci l'URL e l'Anon Key, poi crea il tuo account con email e password. Fatto!
 
 ## Come installare l'app sul telefono
 

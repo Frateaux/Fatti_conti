@@ -16,6 +16,7 @@
     <button id="btnBack" class="icon-btn hidden" aria-label="Indietro">&#8592;</button>
     <h1 id="title">Ritiri</h1>
     <span class="spacer"></span>
+    <span id="syncBadge" class="badge hidden" style="background:#e3f4ea;color:#1e6340;cursor:pointer" title="Stato sincronizzazione">&#9729; sincronizzato</span>
     <span id="offline" class="badge hidden" style="background:#fff;color:#8a5a12">&#9888; offline</span>
   </header>
 
@@ -31,6 +32,22 @@
 
   <div id="toast" class="toast"></div>
   <dialog id="dialog"></dialog>
+
+  <div id="lockScreen" class="lock-screen hidden">
+    <div class="lock-card">
+      <div class="lock-icon">&#128274;</div>
+      <h2>Fatti Conti</h2>
+      <p class="muted">Accesso protetto. Sblocca per visualizzare i tuoi dati.</p>
+      <button id="btnBioUnlock" class="btn primary block hidden" style="margin-top:1.2rem;font-size:1.05rem;padding:.8rem">&#128070; Sblocca con Impronta / Viso</button>
+      <div id="pinUnlockRow" style="margin-top:1.2rem">
+        <label style="text-align:left;display:block;margin-bottom:.3rem">PIN o Password</label>
+        <div style="display:flex;gap:.5rem">
+          <input type="password" id="inputPin" placeholder="Inserisci PIN o password" style="flex:1">
+          <button id="btnPinUnlock" class="btn primary">Sblocca</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="lib/jspdf.umd.min.js"></script>

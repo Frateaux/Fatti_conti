@@ -41,22 +41,40 @@ function defaultState() {
     contatori: {},   // {anno: ultimoNumero} pro forma
     contatoriGen: {},// {anno: ultimoNumero} fatture generali
     ultimoFornitore: null,
-    drive: { clientId: '', cartella: 'Fatti Conti - Pro Forma', perFornitore: true }
+    drive: { clientId: '', cartella: 'Fatti Conti - Pro Forma', perFornitore: true },
+    cloud: { url: 'https://oootjrpsuypjgejfyjli.supabase.co', anonKey: 'sb_publishable_2mlq3_DGPfrrHacxnM-Lww_A2o-9YRM', email: '', token: null, ultimoSync: null, autoSync: true },
+    sicurezza: { bloccoAttivo: false, tipo: 'nessuno', credentialId: null, pinHash: null }
   };
 }
 
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY));
-    if (s) return Object.assign(defaultState(), s);
+    if (s) {
+      const def = defaultState();
+      const cloud = { ...def.cloud, ...(s.cloud || {}) };
+      if (!cloud.url) cloud.url = def.cloud.url;
+      if (!cloud.anonKey) cloud.anonKey = def.cloud.anonKey;
+      return {
+        ...def,
+        ...s,
+        azienda: { ...def.azienda, ...(s.azienda || {}) },
+        drive: { ...def.drive, ...(s.drive || {}) },
+        cloud,
+        sicurezza: { ...def.sicurezza, ...(s.sicurezza || {}) }
+      };
+    }
   } catch (e) { console.error(e); }
   return defaultState();
 }
 
 let S = load();
-function save() {
+function save(skipCloud = false) {
   try { localStorage.setItem(KEY, JSON.stringify(S)); }
   catch (e) { alert('Errore nel salvataggio dei dati: ' + e.message); }
+  if (!skipCloud && S.cloud?.autoSync && S.cloud?.url && S.cloud?.token?.access_token && navigator.onLine) {
+    programmaSyncCloud();
+  }
 }
 
 const getMerce = id => S.merci.find(m => m.id === id);
@@ -269,6 +287,333 @@ function spostaRitiroDialog(r) {
       save(); render();
       toast(`Pro forma N. ${r.numero}/${r.anno} spostata in ${numGen(nuovaG)}`);
     }, { okLabel: 'Sposta', noFocus: true });
+}
+
+/* ---------------- Cloud & Sincronizzazione (Supabase) ---------------- */
+
+let syncTimer = null;
+function programmaSyncCloud() {
+  clearTimeout(syncTimer);
+  aggiornaBadgeSync('syncing');
+  syncTimer = setTimeout(async () => {
+    try {
+      await sbSalvaDati();
+    } catch (e) {
+      console.warn('Errore sync cloud:', e);
+      aggiornaBadgeSync('error');
+    }
+  }, 1500);
+}
+
+function sbHeaders(conToken = true) {
+  const h = {
+    'apikey': S.cloud.anonKey,
+    'Content-Type': 'application/json'
+  };
+  if (conToken && S.cloud.token?.access_token) {
+    h['Authorization'] = `Bearer ${S.cloud.token.access_token}`;
+  }
+  return h;
+}
+
+function sbBaseUrl() {
+  return String(S.cloud?.url || '').trim().replace(/\/+$/, '').replace(/\/rest\/v1\/?$/, '');
+}
+
+async function sbFetch(path, opts = {}, conToken = true) {
+  if (!S.cloud.url || !S.cloud.anonKey) throw new Error('Supabase non configurato.');
+  const base = sbBaseUrl();
+  const url = base + path;
+  const headers = Object.assign(sbHeaders(conToken), opts.headers || {});
+  let res = await fetch(url, { ...opts, headers });
+  if (res.status === 401 && conToken && S.cloud.token?.refresh_token) {
+    const ok = await sbRinnovaToken();
+    if (ok) {
+      headers['Authorization'] = `Bearer ${S.cloud.token.access_token}`;
+      res = await fetch(url, { ...opts, headers });
+    }
+  }
+  return res;
+}
+
+async function sbRinnovaToken() {
+  if (!S.cloud.token?.refresh_token) return false;
+  try {
+    const res = await fetch(`${sbBaseUrl()}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: sbHeaders(false),
+      body: JSON.stringify({ refresh_token: S.cloud.token.refresh_token })
+    });
+    if (!res.ok) return false;
+    const j = await res.json();
+    S.cloud.token = {
+      access_token: j.access_token,
+      refresh_token: j.refresh_token,
+      expires_at: Date.now() + (j.expires_in || 3600) * 1000,
+      user: j.user || S.cloud.token.user
+    };
+    save(true);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function sbRegistrazione(email, password) {
+  const res = await sbFetch('/auth/v1/signup', {
+    method: 'POST',
+    body: JSON.stringify({ email, password })
+  }, false);
+  const j = await res.json();
+  if (!res.ok) throw new Error(j.msg || j.error_description || j.message || 'Errore nella registrazione');
+  if (j.access_token) {
+    S.cloud.token = {
+      access_token: j.access_token,
+      refresh_token: j.refresh_token,
+      expires_at: Date.now() + (j.expires_in || 3600) * 1000,
+      user: j.user
+    };
+    S.cloud.email = email;
+    save(true);
+  }
+  return j;
+}
+
+async function sbLogin(email, password) {
+  const res = await sbFetch('/auth/v1/token?grant_type=password', {
+    method: 'POST',
+    body: JSON.stringify({ email, password })
+  }, false);
+  const j = await res.json();
+  if (!res.ok) throw new Error(j.error_description || j.msg || j.message || 'Credenziali non valide');
+  S.cloud.token = {
+    access_token: j.access_token,
+    refresh_token: j.refresh_token,
+    expires_at: Date.now() + (j.expires_in || 3600) * 1000,
+    user: j.user
+  };
+  S.cloud.email = email;
+  save(true);
+  return j;
+}
+
+function sbLogout() {
+  S.cloud.token = null;
+  save(true);
+  aggiornaBadgeSync();
+  render();
+}
+
+async function sbCaricaDati(silenzioso = false) {
+  if (!S.cloud.token?.access_token) return;
+  aggiornaBadgeSync('syncing');
+  const res = await sbFetch('/rest/v1/app_state?select=data,updated_at', { method: 'GET' });
+  if (!res.ok) {
+    const errText = await res.text();
+    aggiornaBadgeSync('error');
+    if (res.status === 404 || errText.includes('relation "app_state" does not exist')) {
+      throw new Error('Tabella app_state non trovata su Supabase. Crea la tabella nell\'editor SQL come indicato.');
+    }
+    throw new Error('Errore nel caricamento dal cloud: ' + res.status);
+  }
+  const rows = await res.json();
+  if (!rows || !rows.length) {
+    await sbSalvaDati();
+    return;
+  }
+  const rem = rows[0];
+  const localCloud = { ...S.cloud, ultimoSync: rem.updated_at };
+  const localSicurezza = { ...S.sicurezza };
+  
+  S = Object.assign(defaultState(), rem.data);
+  S.cloud = localCloud;
+  S.sicurezza = localSicurezza;
+  save(true);
+  render();
+  aggiornaBadgeSync('ok');
+  if (!silenzioso) toast('Dati sincronizzati dal cloud ✔');
+}
+
+async function sbSalvaDati() {
+  if (!S.cloud.token?.access_token || !S.cloud.token?.user?.id) return;
+  aggiornaBadgeSync('syncing');
+  const copia = JSON.parse(JSON.stringify(S));
+  copia.cloud = { url: S.cloud.url, anonKey: S.cloud.anonKey, email: S.cloud.email, autoSync: S.cloud.autoSync };
+  copia.sicurezza = { bloccoAttivo: false, tipo: 'nessuno', credentialId: null, pinHash: null };
+
+  const now = new Date().toISOString();
+  const body = {
+    user_id: S.cloud.token.user.id,
+    data: copia,
+    updated_at: now
+  };
+
+  const res = await sbFetch('/rest/v1/app_state', {
+    method: 'POST',
+    headers: { 'Prefer': 'resolution=merge-duplicates' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    aggiornaBadgeSync('error');
+    throw new Error('Errore nel salvataggio su Supabase: ' + err);
+  }
+  S.cloud.ultimoSync = now;
+  save(true);
+  aggiornaBadgeSync('ok');
+}
+
+function aggiornaBadgeSync(stato) {
+  const b = $('#syncBadge');
+  if (!b) return;
+  if (!S.cloud?.url || !S.cloud?.token?.access_token) {
+    b.classList.add('hidden');
+    return;
+  }
+  b.classList.remove('hidden');
+  if (stato === 'syncing') {
+    b.style.background = '#fff8e6'; b.style.color = '#8a5a12';
+    b.textContent = '☁ sincronizzo…';
+  } else if (stato === 'error') {
+    b.style.background = '#fde8e8'; b.style.color = '#9b1c1c';
+    b.textContent = '⚠ sync errore';
+  } else {
+    b.style.background = '#e3f4ea'; b.style.color = '#1e6340';
+    b.textContent = '☁ sincronizzato';
+  }
+}
+
+/* ---------------- Sicurezza & Blocco Biometrico ---------------- */
+
+async function sha256Hex(str) {
+  const enc = new TextEncoder().encode(str);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function supportoBiometria() {
+  if (!window.PublicKeyCredential) return false;
+  try {
+    return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+  } catch (e) {
+    return false;
+  }
+}
+
+async function registraBiometria(email) {
+  const challenge = new Uint8Array(32);
+  crypto.getRandomValues(challenge);
+  const userId = new Uint8Array(16);
+  crypto.getRandomValues(userId);
+
+  const cred = await navigator.credentials.create({
+    publicKey: {
+      challenge,
+      rp: { name: 'Fatti Conti' },
+      user: {
+        id: userId,
+        name: email || 'utente',
+        displayName: 'Fatti Conti'
+      },
+      pubKeyCredParams: [{ alg: -7, type: 'public-key' }, { alg: -257, type: 'public-key' }],
+      authenticatorSelection: {
+        authenticatorAttachment: 'platform',
+        userVerification: 'required'
+      },
+      timeout: 60000
+    }
+  });
+  if (!cred) throw new Error('Biometria annullata');
+  return Array.from(new Uint8Array(cred.rawId)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function verificaBiometria(credHex) {
+  const challenge = new Uint8Array(32);
+  crypto.getRandomValues(challenge);
+  const rawId = new Uint8Array(credHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+  const assert = await navigator.credentials.get({
+    publicKey: {
+      challenge,
+      allowCredentials: [{ id: rawId, type: 'public-key' }],
+      userVerification: 'required',
+      timeout: 60000
+    }
+  });
+  return !!assert;
+}
+
+let appSbloccata = false;
+
+function setupLockScreenListeners() {
+  $('#btnBioUnlock')?.addEventListener('click', tentaSbloccoBiometrico);
+  $('#btnPinUnlock')?.addEventListener('click', () => {
+    const val = $('#inputPin')?.value || '';
+    sbloccaConPin(val);
+  });
+  $('#inputPin')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      sbloccaConPin($('#inputPin').value);
+    }
+  });
+}
+
+function verificaBloccoAllAvvio() {
+  const sc = $('#lockScreen');
+  if (!sc) return;
+  if (!S.sicurezza?.bloccoAttivo || appSbloccata) {
+    sc.classList.add('hidden');
+    return;
+  }
+  sc.classList.remove('hidden');
+  const btnBio = $('#btnBioUnlock');
+  if (S.sicurezza.credentialId) {
+    btnBio?.classList.remove('hidden');
+    tentaSbloccoBiometrico();
+  } else {
+    btnBio?.classList.add('hidden');
+  }
+
+  const rowPin = $('#pinUnlockRow');
+  if (S.sicurezza.pinHash) {
+    rowPin?.classList.remove('hidden');
+  } else if (!S.sicurezza.credentialId) {
+    sc.classList.add('hidden');
+    appSbloccata = true;
+  }
+}
+
+async function tentaSbloccoBiometrico() {
+  if (!S.sicurezza.credentialId) return;
+  try {
+    const ok = await verificaBiometria(S.sicurezza.credentialId);
+    if (ok) {
+      sbloccaApp();
+      toast('Sbloccato con biometria ✔');
+    }
+  } catch (e) {
+    console.warn('Verifica biometrica annullata o fallita:', e);
+  }
+}
+
+async function sbloccaConPin(pin) {
+  if (!S.sicurezza.pinHash) return false;
+  const hash = await sha256Hex(pin);
+  if (hash === S.sicurezza.pinHash) {
+    sbloccaApp();
+    toast('Sbloccato ✔');
+    return true;
+  }
+  alert('PIN o password errati');
+  return false;
+}
+
+function sbloccaApp() {
+  appSbloccata = true;
+  $('#lockScreen')?.classList.add('hidden');
+  if (S.cloud?.token?.access_token && S.cloud?.url && navigator.onLine) {
+    sbCaricaDati(true).catch(e => console.warn(e));
+  }
 }
 
 /* ---------------- Navigazione ---------------- */
@@ -1176,6 +1521,99 @@ function viewImpostazioni(v) {
       <input type="file" id="impFile" accept="application/json,.json" class="hidden">
     </div>
 
+    <div class="card" id="cardCloud">
+      <h2>&#9729; Sincronizzazione Cloud (PC & Smartphone)</h2>
+      <p class="muted">Sincronizza in tempo reale i dati tra telefono e computer in modo completamente gratuito e privato (database protetto da crittografia e login).</p>
+
+      ${!S.cloud.url || !S.cloud.anonKey ? `
+        <form id="fCloudConfig">
+          <label>URL Progetto Supabase</label>
+          <input name="url" value="${esc(S.cloud.url)}" placeholder="https://abcdefgh.supabase.co" required autocomplete="off">
+          <label>Chiave Anonima Pubblica (anon public key)</label>
+          <input name="anonKey" value="${esc(S.cloud.anonKey)}" placeholder="eyJhbGciOiJIUzI1NiIsIn..." required autocomplete="off">
+          <button class="btn primary block" style="margin-top:.8rem">Salva configurazione Cloud</button>
+        </form>
+        <details style="margin-top:1rem">
+          <summary><b>Come creare il tuo database gratuito Supabase (3 minuti)</b></summary>
+          <ol class="muted" style="padding-left:1.2rem;margin-top:.5rem">
+            <li>Vai su <a href="https://supabase.com" target="_blank" rel="noopener">supabase.com</a> e crea un account gratuito.</li>
+            <li>Crea un nuovo progetto (es. <b>fatti-conti</b>).</li>
+            <li>In <b>Project Settings &rarr; API</b>, copia l'<b>URL</b> e la chiave <b>anon public</b> e incollali qui sopra.</li>
+            <li>In <b>SQL Editor</b>, esegui il codice SQL fornito nella guida per proteggere la tabella con RLS.</li>
+          </ol>
+        </details>
+      ` : S.cloud.token?.access_token ? `
+        <div style="background:#e3f4ea;border:1px solid #a3d9b8;border-radius:8px;padding:.8rem;color:#1e6340;margin-bottom:.8rem">
+          &#9989; Connesso come: <b>${esc(S.cloud.email)}</b><br>
+          <small>Ultima sincronizzazione: ${S.cloud.ultimoSync ? new Date(S.cloud.ultimoSync).toLocaleString('it-IT') : 'in corso…'}</small>
+        </div>
+        <label style="display:flex;gap:.5rem;align-items:center;color:var(--text);margin-bottom:.8rem">
+          <input type="checkbox" id="chkAutoSync" style="width:auto" ${S.cloud.autoSync ? 'checked' : ''}>
+          Sincronizzazione automatica attiva (in tempo reale)
+        </label>
+        <div class="btn-row">
+          <button class="btn primary" id="btnSyncNow">&#9729; Sincronizza ora</button>
+          <button class="btn" id="btnLogoutCloud">Disconnetti account</button>
+        </div>
+        <details style="margin-top:1rem">
+          <summary class="muted">Modifica parametri server Supabase</summary>
+          <form id="fCloudConfig" style="margin-top:.6rem">
+            <label>URL Progetto</label>
+            <input name="url" value="${esc(S.cloud.url)}" required>
+            <label>Anon Key</label>
+            <input name="anonKey" value="${esc(S.cloud.anonKey)}" required>
+            <button class="btn small" style="margin-top:.4rem">Aggiorna parametri</button>
+          </form>
+        </details>
+      ` : `
+        <p class="muted">Parametri server salvati. Accedi con le tue credenziali o crea un nuovo account:</p>
+        <form id="fCloudAuth">
+          <label>Email</label>
+          <input name="email" type="email" value="${esc(S.cloud.email)}" required placeholder="tua@email.it" autocomplete="username">
+          <label>Password</label>
+          <input name="password" type="password" required placeholder="Minimo 6 caratteri" autocomplete="current-password">
+          <div class="btn-row" style="margin-top:.8rem">
+            <button class="btn primary" type="submit" id="btnAccedi">Accedi</button>
+            <button class="btn" type="button" id="btnRegistrati">Crea account</button>
+          </div>
+        </form>
+        <details style="margin-top:1rem">
+          <summary class="muted">Modifica parametri server Supabase</summary>
+          <form id="fCloudConfig" style="margin-top:.6rem">
+            <label>URL Progetto</label>
+            <input name="url" value="${esc(S.cloud.url)}" required>
+            <label>Anon Key</label>
+            <input name="anonKey" value="${esc(S.cloud.anonKey)}" required>
+            <button class="btn small" style="margin-top:.4rem">Aggiorna parametri</button>
+          </form>
+        </details>
+      `}
+    </div>
+
+    <div class="card" id="cardSicurezza">
+      <h2>&#128274; Protezione & Blocco App</h2>
+      <p class="muted">Proteggi l'apertura dell'applicazione con dati biometrici (impronta/viso) o PIN.</p>
+
+      ${S.sicurezza.bloccoAttivo ? `
+        <div style="background:#e3f4ea;border:1px solid #a3d9b8;border-radius:8px;padding:.8rem;color:#1e6340;margin-bottom:.8rem">
+          &#128274; <b>Blocco app attivo</b>:
+          ${S.sicurezza.credentialId ? ' Impronta / Viso' : ''}
+          ${S.sicurezza.credentialId && S.sicurezza.pinHash ? ' +' : ''}
+          ${S.sicurezza.pinHash ? ' PIN / Password' : ''}
+        </div>
+        <div class="btn-row">
+          <button class="btn danger" id="btnDisattivaBlocco">Disattiva blocco</button>
+          <button class="btn" id="btnTestBlocco">Blocca adesso</button>
+        </div>
+      ` : `
+        <p class="muted">&#128275; L'app si apre liberamente senza richiesta di impronta o PIN.</p>
+        <div class="btn-row">
+          <button class="btn primary" id="btnAttivaBio">&#128070; Attiva con Impronta / Viso</button>
+          <button class="btn" id="btnAttivaPin">&#128273; Attiva con PIN o Password</button>
+        </div>
+      `}
+    </div>
+
     <div class="card">
       <h2>Uso senza internet</h2>
       <p class="muted" id="statoOffline">Verifica in corso…</p>
@@ -1261,6 +1699,153 @@ function viewImpostazioni(v) {
       alert('Impossibile importare: ' + err.message);
     }
   });
+
+  // Cloud config
+  $('#fCloudConfig')?.addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    S.cloud.url = String(fd.get('url') || '').trim();
+    S.cloud.anonKey = String(fd.get('anonKey') || '').trim();
+    save(true);
+    toast('Parametri Cloud salvati');
+    render();
+  });
+
+  // Cloud Auth (Login)
+  $('#fCloudAuth')?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = $('#btnAccedi');
+    btn.disabled = true; btn.textContent = 'Accesso…';
+    const fd = new FormData(e.target);
+    const email = String(fd.get('email') || '').trim();
+    const password = String(fd.get('password') || '');
+    try {
+      await sbLogin(email, password);
+      toast('Accesso riuscito ✔');
+      await sbCaricaDati(true);
+      render();
+    } catch (err) {
+      alert(err.message);
+      btn.disabled = false; btn.textContent = 'Accedi';
+    }
+  });
+
+  // Cloud Auth (Registrati)
+  $('#btnRegistrati')?.addEventListener('click', async () => {
+    const f = $('#fCloudAuth');
+    const email = String(f.email.value || '').trim();
+    const password = String(f.password.value || '');
+    if (!email || password.length < 6) return alert('Inserisci email e una password di almeno 6 caratteri.');
+    const btn = $('#btnRegistrati');
+    btn.disabled = true; btn.textContent = 'Creazione…';
+    try {
+      const res = await sbRegistrazione(email, password);
+      if (res.user && !res.access_token) {
+        alert('Account creato! Se Supabase richiede conferma email, controlla la tua casella postale, poi esegui l\'accesso.');
+      } else {
+        toast('Account creato e collegato ✔');
+        await sbSalvaDati();
+      }
+      render();
+    } catch (err) {
+      alert(err.message);
+      btn.disabled = false; btn.textContent = 'Crea account';
+    }
+  });
+
+  $('#btnSyncNow')?.addEventListener('click', async () => {
+    const btn = $('#btnSyncNow');
+    btn.disabled = true; btn.textContent = 'Sincronizzazione…';
+    try {
+      await sbCaricaDati(false);
+      await sbSalvaDati();
+      toast('Sincronizzazione completata ✔');
+    } catch (err) {
+      alert(err.message);
+    }
+    render();
+  });
+
+  $('#btnLogoutCloud')?.addEventListener('click', () => {
+    if (confirm('Disconnettere questo dispositivo dal cloud? I dati locali rimarranno comunque salvati sul dispositivo.')) {
+      sbLogout();
+    }
+  });
+
+  $('#chkAutoSync')?.addEventListener('change', e => {
+    S.cloud.autoSync = e.target.checked;
+    save(true);
+    toast(S.cloud.autoSync ? 'Sincronizzazione automatica attiva' : 'Sincronizzazione automatica disattivata');
+  });
+
+  // Sicurezza (Biometria / PIN)
+  $('#btnAttivaBio')?.addEventListener('click', async () => {
+    const sup = await supportoBiometria();
+    if (!sup) {
+      if (!confirm('Il tuo browser o dispositivo non sembra supportare il sensore biometrico diretto (Face ID / Impronta). Vuoi impostare un PIN o password?')) return;
+      return attivaPinDialog();
+    }
+    try {
+      const credHex = await registraBiometria(S.cloud?.email || S.azienda?.email || 'utente');
+      S.sicurezza.bloccoAttivo = true;
+      S.sicurezza.tipo = 'biometrico';
+      S.sicurezza.credentialId = credHex;
+      // Chiedi anche PIN di riserva
+      dialogForm(`<h2>PIN di riserva (consigliato)</h2>
+        <p class="muted">Imposta un PIN o una password per sbloccare l'app se il sensore biometrico non dovesse funzionare.</p>
+        <label>PIN o Password</label>
+        <input name="pin" type="password" required placeholder="es. 1234">`,
+        async d => {
+          if (d.pin) S.sicurezza.pinHash = await sha256Hex(d.pin.trim());
+          save(true); render();
+          toast('Blocco con impronta/viso attivato ✔');
+        }, { okLabel: 'Salva', noFocus: true });
+    } catch (err) {
+      alert('Impossibile attivare la biometria: ' + err.message);
+    }
+  });
+
+  function attivaPinDialog() {
+    dialogForm(`<h2>Imposta PIN o Password</h2>
+      <p class="muted">Verrà richiesto all'apertura dell'app per visualizzare i tuoi dati.</p>
+      <label>PIN o Password</label>
+      <input name="pin" type="password" required placeholder="es. 1234">`,
+      async d => {
+        const pin = String(d.pin || '').trim();
+        if (pin.length < 3) { toast('Inserisci almeno 3 caratteri'); return false; }
+        S.sicurezza.bloccoAttivo = true;
+        S.sicurezza.tipo = 'password';
+        S.sicurezza.pinHash = await sha256Hex(pin);
+        save(true); render();
+        toast('Blocco con PIN attivato ✔');
+      }, { okLabel: 'Attiva', noFocus: true });
+  }
+
+  $('#btnAttivaPin')?.addEventListener('click', attivaPinDialog);
+
+  $('#btnDisattivaBlocco')?.addEventListener('click', async () => {
+    if (S.sicurezza.pinHash) {
+      const p = prompt('Inserisci il PIN o la password attuale per disattivare il blocco:');
+      if (!p) return;
+      const h = await sha256Hex(p.trim());
+      if (h !== S.sicurezza.pinHash) return alert('PIN errato.');
+    } else if (S.sicurezza.credentialId) {
+      const ok = await verificaBiometria(S.sicurezza.credentialId);
+      if (!ok) return alert('Verifica non superata.');
+    }
+    S.sicurezza.bloccoAttivo = false;
+    S.sicurezza.tipo = 'nessuno';
+    S.sicurezza.credentialId = null;
+    S.sicurezza.pinHash = null;
+    save(true); render();
+    toast('Blocco disattivato');
+  });
+
+  $('#btnTestBlocco')?.addEventListener('click', () => {
+    appSbloccata = false;
+    verificaBloccoAllAvvio();
+  });
+
   verificaOffline();
 }
 
@@ -1752,8 +2337,37 @@ window.addEventListener('offline', aggiornaBadgeOffline);
 /* ---------------- Avvio ---------------- */
 
 history.replaceState({}, '');
+setupLockScreenListeners();
+verificaBloccoAllAvvio();
 render();
 aggiornaBadgeOffline();
+aggiornaBadgeSync();
+
+if (S.cloud?.url && S.cloud?.token?.access_token && navigator.onLine && (!S.sicurezza?.bloccoAttivo || appSbloccata)) {
+  sbCaricaDati(true).catch(e => console.warn('Sync avvio:', e));
+}
+
+window.addEventListener('online', () => {
+  aggiornaBadgeOffline();
+  aggiornaBadgeSync();
+  if (S.cloud?.autoSync && S.cloud?.url && S.cloud?.token?.access_token) {
+    sbCaricaDati(true).catch(() => {});
+  }
+});
+window.addEventListener('offline', () => {
+  aggiornaBadgeOffline();
+  aggiornaBadgeSync();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && navigator.onLine && S.cloud?.autoSync && S.cloud?.url && S.cloud?.token?.access_token && (!S.sicurezza?.bloccoAttivo || appSbloccata)) {
+    sbCaricaDati(true).catch(() => {});
+  }
+});
+
+$('#syncBadge')?.addEventListener('click', () => {
+  vaiTab('impostazioni');
+  setTimeout(() => $('#cardCloud')?.scrollIntoView({ behavior: 'smooth' }), 100);
+});
 
 if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
