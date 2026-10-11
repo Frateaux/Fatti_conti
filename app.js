@@ -70,19 +70,23 @@ function fornitoreDi(r) {
 
 const numGen = g => `G${g.numero}/${g.anno}`;
 
-/** Restituisce la fattura generale aperta del fornitore (se crea=true la crea se manca) */
+/** Crea una nuova fattura generale per il fornitore */
+function creaNuovaGenerale(fornitoreId) {
+  const anno = today().slice(0, 4);
+  S.contatoriGen[anno] = (S.contatoriGen[anno] || 0) + 1;
+  const f = S.fornitori.find(x => x.id === fornitoreId);
+  const g = {
+    id: uid(), numero: S.contatoriGen[anno], anno, fornitoreId, fornitoreSnap: f ? { ...f } : null,
+    creata: today(), acconti: [], saldo: null, chiusa: false, pdfSalvato: null, driveFileId: null, driveLink: null
+  };
+  S.generali.push(g);
+  return g;
+}
+
+/** Restituisce la prima fattura generale aperta del fornitore (se crea=true ne crea una se manca) */
 function generaleAperta(fornitoreId, crea = false) {
   let g = S.generali.find(x => x.fornitoreId === fornitoreId && !x.chiusa);
-  if (!g && crea) {
-    const anno = today().slice(0, 4);
-    S.contatoriGen[anno] = (S.contatoriGen[anno] || 0) + 1;
-    const f = S.fornitori.find(x => x.id === fornitoreId);
-    g = {
-      id: uid(), numero: S.contatoriGen[anno], anno, fornitoreId, fornitoreSnap: f ? { ...f } : null,
-      creata: today(), acconti: [], saldo: null, chiusa: false, pdfSalvato: null, driveFileId: null, driveLink: null
-    };
-    S.generali.push(g);
-  }
+  if (!g && crea) g = creaNuovaGenerale(fornitoreId);
   return g || null;
 }
 
@@ -221,6 +225,52 @@ async function condividiFile(blob, nome, tipo) {
   return 'download';
 }
 
+function opzioniGenPerFornitore(fornitoreId) {
+  const aperte = S.generali.filter(g => g.fornitoreId === fornitoreId && !g.chiusa);
+  let h = '';
+  if (aperte.length) {
+    h += aperte.map(g => `<option value="${g.id}">Includi in n. ${numGen(g)} (aperta)</option>`).join('');
+    h += `<option value="__new__">+ Crea nuova fattura generale separata</option>`;
+  } else {
+    h += `<option value="__new__">Crea nuova fattura generale</option>`;
+  }
+  return h;
+}
+
+function spostaRitiroDialog(r) {
+  const gAttuale = r.generaleId ? getGenerale(r.generaleId) : null;
+  if (gAttuale && gAttuale.chiusa) {
+    alert('Questa pro forma appartiene a una fattura generale già saldata e bloccata.');
+    return;
+  }
+  const altreAperte = S.generali.filter(g => g.fornitoreId === r.fornitoreId && !g.chiusa && g.id !== r.generaleId);
+  const opzioni = [
+    '<option value="__new__">+ Crea una NUOVA fattura generale separata</option>',
+    ...altreAperte.map(g => `<option value="${g.id}">Sposta in n. ${numGen(g)} (aperta)</option>`)
+  ];
+  dialogForm(`<h2>Sposta fattura pro forma</h2>
+    <p class="muted">Pro forma <b>N. ${r.numero}/${r.anno}</b> del ${fmtDate(r.data)} · ${esc(fornitoreDi(r).nome)}</p>
+    <p style="margin:.4rem 0">Attualmente inclusa in: <b>${gAttuale ? 'n. ' + numGen(gAttuale) : 'nessuna'}</b></p>
+    <label>Destinazione</label>
+    <select name="destinazione" required>
+      ${opzioni.join('')}
+    </select>`,
+    d => {
+      let nuovaG;
+      if (d.destinazione === '__new__') {
+        nuovaG = creaNuovaGenerale(r.fornitoreId);
+      } else {
+        nuovaG = getGenerale(d.destinazione);
+      }
+      if (!nuovaG) return false;
+      const vecchiaG = gAttuale;
+      r.generaleId = nuovaG.id;
+      rimuoviSeVuota(vecchiaG);
+      save(); render();
+      toast(`Pro forma N. ${r.numero}/${r.anno} spostata in ${numGen(nuovaG)}`);
+    }, { okLabel: 'Sposta', noFocus: true });
+}
+
 /* ---------------- Navigazione ---------------- */
 
 const nav = { tab: 'ritiri', stack: [], filtroForn: '' };
@@ -322,10 +372,14 @@ function nuovoRitiro() {
   if (!S.fornitori.length) { toast('Prima aggiungi almeno un fornitore'); nav.tab = 'fornitori'; return render(); }
   if (!S.merci.length) { toast('Prima aggiungi almeno una merce'); nav.tab = 'merci'; return render(); }
   const def = S.ultimoFornitore && S.fornitori.some(f => f.id === S.ultimoFornitore) ? S.ultimoFornitore : S.fornitori[0].id;
-  dialogForm(`<h2>Nuovo ritiro</h2>
+  const dlg = dialogForm(`<h2>Nuovo ritiro</h2>
     <label>Fornitore</label>
-    <select name="fornitoreId" required>
+    <select name="fornitoreId" id="selFornRitiro" required>
       ${S.fornitori.map(f => `<option value="${f.id}" ${f.id === def ? 'selected' : ''}>${esc(f.nome)}</option>`).join('')}
+    </select>
+    <label>Fattura generale</label>
+    <select name="generaleDest" id="selGenDest" required>
+      ${opzioniGenPerFornitore(def)}
     </select>
     <label>Data</label>
     <input type="date" name="data" value="${today()}" required>`,
@@ -338,12 +392,26 @@ function nuovoRitiro() {
         fornitoreId: d.fornitoreId, fornitoreSnap: { ...f },
         righe: {}, pesate: [], note: '', chiuso: false, pdfSalvato: null, creato: Date.now()
       };
-      r.generaleId = generaleAperta(d.fornitoreId, true).id;
+      if (d.generaleDest === '__new__') {
+        r.generaleId = creaNuovaGenerale(d.fornitoreId).id;
+      } else {
+        let g = getGenerale(d.generaleDest);
+        if (!g || g.chiusa) g = generaleAperta(d.fornitoreId, true);
+        r.generaleId = g.id;
+      }
       S.ritiri.push(r);
       S.ultimoFornitore = d.fornitoreId;
       save();
       setTimeout(() => apriRitiro(r.id), 0);
     }, { okLabel: 'Crea', noFocus: true });
+
+  const selF = $('#selFornRitiro', dlg);
+  const selG = $('#selGenDest', dlg);
+  if (selF && selG) {
+    selF.addEventListener('change', () => {
+      selG.innerHTML = opzioniGenPerFornitore(selF.value);
+    });
+  }
 }
 
 /* ---------------- Vista: dettaglio ritiro ---------------- */
@@ -360,7 +428,10 @@ function viewRitiro(v, r) {
   if (g) {
     h += saldata
       ? `<div class="card banner-ok" id="vaiGen">&#128274; <b>Saldata</b> con la fattura generale <b>n. ${numGen(g)}</b> del <b>${fmtDate(g.saldo.data)}</b> &rsaquo;</div>`
-      : `<div class="card banner-open" id="vaiGen">&#128203; Inclusa nella fattura generale <b>n. ${numGen(g)}</b> (aperta) &rsaquo;</div>`;
+      : `<div class="card banner-open" style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;flex-wrap:wrap">
+          <div id="vaiGen" style="flex:1;cursor:pointer">&#128203; Inclusa nella fattura generale <b>n. ${numGen(g)}</b> (aperta) &rsaquo;</div>
+          <button class="btn small" id="btnSpostaGen" style="margin:0;white-space:nowrap">Separa / Sposta</button>
+        </div>`;
   }
   h += `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:.5rem">
@@ -453,6 +524,10 @@ function viewRitiro(v, r) {
     const prev = nav.stack[nav.stack.length - 2];
     if (prev && prev.tipo === 'generale' && prev.id === g.id) history.back();
     else apriGenerale(g.id);
+  });
+  $('#btnSpostaGen')?.addEventListener('click', e => {
+    e.stopPropagation();
+    spostaRitiroDialog(r);
   });
   $('#modTest')?.addEventListener('click', () => modificaTestata(r));
 
@@ -655,15 +730,15 @@ function viewConti(v) {
   $$('[data-g]', v).forEach(el => el.addEventListener('click', () => apriGenerale(el.dataset.g)));
   $('#nuovoConto').addEventListener('click', () => {
     if (!S.fornitori.length) { toast('Prima aggiungi almeno un fornitore'); return vaiTab('fornitori'); }
-    dialogForm(`<h2>Conto fornitore</h2>
-      <p class="muted">Apre la fattura generale in corso del fornitore (utile per registrare un acconto prima del ritiro).</p>
+    dialogForm(`<h2>Nuova fattura generale</h2>
+      <p class="muted">Crea una fattura generale separata per un fornitore (utile per gestire pagamenti in momenti diversi o registrare acconti).</p>
       <label>Fornitore</label>
       <select name="fornitoreId">${S.fornitori.map(f => `<option value="${f.id}">${esc(f.nome)}</option>`).join('')}</select>`,
       d => {
-        const g = generaleAperta(d.fornitoreId, true);
+        const g = creaNuovaGenerale(d.fornitoreId);
         save();
         setTimeout(() => apriGenerale(g.id), 0);
-      }, { okLabel: 'Apri', noFocus: true });
+      }, { okLabel: 'Crea', noFocus: true });
   });
 }
 
@@ -718,14 +793,17 @@ function viewGenerale(v, g) {
 
   // Pro forma incluse
   h += `<div class="card"><h3>Pro forma incluse</h3>`;
-  if (!c.ritiri.length) h += `<div class="muted">Nessuna pro forma: le nuove pro forma di questo fornitore entreranno qui automaticamente.</div>`;
-  h += c.ritiri.map(({ r, c: rc }) => `<div class="list-item" data-r="${r.id}" style="padding:.6rem .8rem">
-      <div class="main">
+  if (!c.ritiri.length) h += `<div class="muted">Nessuna pro forma inclusa.</div>`;
+  h += c.ritiri.map(({ r, c: rc }) => `<div class="list-item" style="padding:.6rem .8rem;align-items:center">
+      <div class="main" data-r="${r.id}" style="cursor:pointer">
         <div class="title">N. ${r.numero}/${r.anno} · ${fmtDate(r.data)}
           ${g.chiusa ? '' : `<span class="badge ${r.chiuso ? 'closed' : 'open'}">${r.chiuso ? 'chiusa' : 'in corso'}</span>`}</div>
         <div class="sub">${rc.colli} colli · ${fmtKg(rc.kg)} kg</div>
       </div>
-      <div class="right">${fmtEur(rc.totale)}</div>
+      <div class="right" style="text-align:right">
+        <div>${fmtEur(rc.totale)}</div>
+        ${!g.chiusa ? `<button class="btn small btn-sposta-r" data-sposta="${r.id}" style="margin-top:.35rem;padding:.2rem .55rem;font-size:.75rem;white-space:nowrap">Separa / Sposta</button>` : ''}
+      </div>
     </div>`).join('');
   h += `</div>`;
 
@@ -773,12 +851,25 @@ function viewGenerale(v, g) {
     ${g.chiusa
       ? `<div class="btn-row"><button class="btn" id="gDriveTutti">&#9729; Aggiorna su Drive anche tutte le pro forma</button></div>
          <div class="btn-row"><button class="btn danger" id="gAnnulla">Annulla saldo</button></div>`
-      : `<div class="btn-row"><button class="btn primary" id="gSaldo" style="background:var(--ok);border-color:var(--ok)">&#10004; Registra saldo e chiudi</button></div>`}
+      : `<div class="btn-row"><button class="btn primary" id="gSaldo" style="background:var(--ok);border-color:var(--ok)">&#10004; Registra saldo e chiudi</button></div>
+         ${!c.ritiri.length && !c.acconti.length ? `<div class="btn-row"><button class="btn danger" id="gElimina">Elimina fattura generale vuota</button></div>` : ''}`}
   </div>`;
 
   v.innerHTML = h;
 
   $$('[data-r]', v).forEach(el => el.addEventListener('click', () => apriRitiro(el.dataset.r)));
+  $$('.btn-sposta-r', v).forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const r = getRitiro(btn.dataset.sposta);
+    if (r) spostaRitiroDialog(r);
+  }));
+  $('#gElimina')?.addEventListener('click', () => {
+    if (!confirm(`Eliminare la fattura generale ${numGen(g)}?`)) return;
+    S.generali = S.generali.filter(x => x !== g);
+    save();
+    toast('Fattura generale eliminata');
+    history.back();
+  });
   if (!g.chiusa) $$('[data-acc]', v).forEach(el => el.addEventListener('click', () => formAcconto(g, g.acconti.find(a => a.id === el.dataset.acc))));
   $('#nuovoAcc')?.addEventListener('click', () => formAcconto(g, null));
   $('#gSaldo')?.addEventListener('click', () => formSaldo(g));

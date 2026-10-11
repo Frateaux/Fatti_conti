@@ -19,15 +19,16 @@ Funziona direttamente da smartphone e tablet, **anche senza connessione internet
 - Quando il ritiro viene saldato, il PDF riporta automaticamente il timbro:
   > **SALDATA con fattura generale n. Gxx/xxxx del gg/mm/aaaa**
 
-### 3. Conti fornitore e Fatture Generali (novità)
-Per i fornitori che vengono saldati periodicamente (mensilmente o ogni 2 mesi):
-- **Sempre aperta in corso d'opera**: ogni nuova pesata/pro forma di quel fornitore viene collegata in automatico alla fattura generale aperta, tenendo sempre aggiornato il quadro della situazione.
+### 3. Conti fornitore e Fatture Generali
+Per i fornitori che vengono saldati periodicamente o a scaglioni diversi:
+- **Collegamento automatico o separato**: per impostazione predefinita ogni nuova pro forma entra nella fattura generale aperta del fornitore; tuttavia, se due ritiri devono essere pagati in momenti diversi, puoi scegliere direttamente alla creazione **"+ Crea nuova fattura generale separata"**.
+- **Separa / Sposta in qualsiasi momento**: se due pro forma si trovano già nella stessa fattura generale, puoi toccare **"Separa / Sposta"** (dal dettaglio del conto o dalla singola pro forma) per creare subito una fattura generale distinta o spostare il ritiro in un altro conto aperto.
 - **Acconti**: puoi annotare in qualsiasi momento gli acconti versati (data, importo, metodo/nota). L'app mostra sempre il **residuo effettivo da pagare**.
 - **Registrazione del saldo**: inserendo la **data del saldo** e l'importo:
-  - La fattura generale viene chiusa e bloccata.
-  - Tutte le pro forma incluse fino a quella data vengono **bloccate definitivamente** per evitare modifiche accidentali.
+  - La fattura generale viene chiusa e bloccata con il proprio saldo.
+  - Tutte le pro forma incluse vengono **bloccate definitivamente** per evitare modifiche accidentali.
   - Sulla fattura generale e su ciascuna pro forma viene registrato il riferimento al saldo.
-  - Se ci sono pesate successive alla data selezionata, passano in automatico alla nuova fattura generale aperta successiva.
+  - Eventuali altre fatture generali dello stesso fornitore rimangono indipendenti e aperte fino al loro rispettivo saldo.
 
 ### 4. Salvataggio su Google Drive
 - Pulsante diretto **Salva PDF su Google Drive**: archivia i documenti nella cartella dedicata (con sottocartelle ordinate per fornitore).

@@ -2,7 +2,7 @@
 // Strategia "prima la cache": l'app si apre SEMPRE dalla copia salvata sul dispositivo
 // (istantanea, anche senza segnale) e si aggiorna in background quando c'è internet.
 // Aumentare VERSION ad ogni modifica dei file per aggiornare la cache.
-const VERSION = 'fatticonti-v6';
+const VERSION = 'fatticonti-v7';
 const FILES = [
   './',
   './index.html',
