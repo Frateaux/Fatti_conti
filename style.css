@@ -138,3 +138,27 @@ table.summary tfoot td { font-weight: 700; font-size: 1.05rem; border-bottom: no
 dialog { border: none; border-radius: 14px; padding: 1.2rem; width: min(92vw, 420px); }
 dialog::backdrop { background: rgba(0,0,0,.4); }
 dialog h2 { margin-top: 0; font-size: 1.15rem; }
+
+.banner-ok {
+  background: #e3f4ea;
+  border-color: #a3d9b8;
+  color: #1e6340;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.banner-open {
+  background: #fff8e6;
+  border-color: #f0d59e;
+  color: #8a5a12;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.sez {
+  margin: 1.25rem 0 .5rem;
+  font-size: .85rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}

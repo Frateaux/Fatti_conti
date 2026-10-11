@@ -351,17 +351,26 @@ function nuovoRitiro() {
 function viewRitiro(v, r) {
   const f = fornitoreDi(r);
   const c = calcola(r);
+  const g = r.generaleId ? getGenerale(r.generaleId) : null;
+  const saldata = g && g.chiusa;
   setTitle(`Pro forma ${r.numero}/${r.anno}`);
   if (!getMerce(selMerce)) selMerce = S.merci[0]?.id || null;
 
-  let h = `<div class="card">
+  let h = '';
+  if (g) {
+    h += saldata
+      ? `<div class="card banner-ok" id="vaiGen">&#128274; <b>Saldata</b> con la fattura generale <b>n. ${numGen(g)}</b> del <b>${fmtDate(g.saldo.data)}</b> &rsaquo;</div>`
+      : `<div class="card banner-open" id="vaiGen">&#128203; Inclusa nella fattura generale <b>n. ${numGen(g)}</b> (aperta) &rsaquo;</div>`;
+  }
+  h += `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:.5rem">
       <div><h2>${esc(f.nome)}</h2>
         <div class="muted">N. ${r.numero}/${r.anno} · ${fmtDate(r.data)}</div>
         ${r.pdfSalvato ? `<div class="muted">PDF salvato il ${new Date(r.pdfSalvato).toLocaleString('it-IT')}</div>` : ''}
       </div>
       <div>
-        <span class="badge ${r.chiuso ? 'closed' : 'open'}">${r.chiuso ? 'chiuso' : 'aperto'}</span>
+        ${saldata ? '<span class="badge closed">&#128274; saldata</span>'
+          : `<span class="badge ${r.chiuso ? 'closed' : 'open'}">${r.chiuso ? 'chiuso' : 'aperto'}</span>`}
         ${!r.chiuso ? '<button class="btn small" id="modTest" style="margin-top:.4rem;display:block">Modifica</button>' : ''}
       </div>
     </div>
@@ -431,15 +440,20 @@ function viewRitiro(v, r) {
       <button class="btn" id="pdfDown">&#11015; Scarica</button>
       <button class="btn" id="pdfView">&#128065; Anteprima</button>
     </div>
-    <div class="btn-row">
+    ${saldata ? '' : `<div class="btn-row">
       <button class="btn" id="toggleChiuso">${r.chiuso ? '&#128275; Riapri ritiro' : '&#10004; Chiudi ritiro'}</button>
       <button class="btn danger" id="elimina">Elimina</button>
-    </div>
+    </div>`}
   </div>`;
 
   v.innerHTML = h;
 
   // --- eventi ---
+  $('#vaiGen')?.addEventListener('click', () => {
+    const prev = nav.stack[nav.stack.length - 2];
+    if (prev && prev.tipo === 'generale' && prev.id === g.id) history.back();
+    else apriGenerale(g.id);
+  });
   $('#modTest')?.addEventListener('click', () => modificaTestata(r));
 
   $$('.chip', v).forEach(ch => ch.addEventListener('click', () => {
@@ -512,15 +526,16 @@ function viewRitiro(v, r) {
     window.open(doc.output('bloburl'), '_blank');
   });
 
-  $('#toggleChiuso').addEventListener('click', () => {
+  $('#toggleChiuso')?.addEventListener('click', () => {
     r.chiuso = !r.chiuso;
     save(); render();
     toast(r.chiuso ? 'Ritiro chiuso: pesate bloccate' : 'Ritiro riaperto');
   });
 
-  $('#elimina').addEventListener('click', () => {
+  $('#elimina')?.addEventListener('click', () => {
     if (!confirm(`Eliminare definitivamente il ritiro N. ${r.numero}/${r.anno} con ${r.pesate.length} pesate?`)) return;
     S.ritiri = S.ritiri.filter(x => x !== r);
+    rimuoviSeVuota(g);
     save();
     history.back();
   });
@@ -540,7 +555,12 @@ function modificaTestata(r) {
     <label>Data</label>
     <input type="date" name="data" value="${r.data}" required>`,
     d => {
-      r.fornitoreId = d.fornitoreId;
+      if (d.fornitoreId !== r.fornitoreId) {
+        const vecchia = getGenerale(r.generaleId);
+        r.generaleId = generaleAperta(d.fornitoreId, true).id;
+        r.fornitoreId = d.fornitoreId;
+        rimuoviSeVuota(vecchia);
+      }
       r.fornitoreSnap = { ...S.fornitori.find(f => f.id === d.fornitoreId) };
       r.data = d.data;
       save(); render();
@@ -578,6 +598,281 @@ function modificaPesata(r, pid) {
         save(); render();
       }
     });
+}
+
+/* ---------------- Vista: conti (fatture generali) ---------------- */
+
+function viewConti(v) {
+  setTitle('Conti fornitori');
+  const aperte = S.generali.filter(g => !g.chiusa)
+    .sort((a, b) => fornitoreDi(a).nome.localeCompare(fornitoreDi(b).nome));
+  let chiuse = S.generali.filter(g => g.chiusa)
+    .sort((a, b) => b.saldo.data.localeCompare(a.saldo.data) || b.numero - a.numero);
+  if (nav.filtroForn) chiuse = chiuse.filter(g => g.fornitoreId === nav.filtroForn);
+
+  let h = `<h3 class="sez">Fatture generali aperte</h3>`;
+  if (!aperte.length) {
+    h += `<div class="empty">Nessun conto aperto.<br>Si apre da solo quando crei una pro forma.</div>`;
+  } else {
+    let totRes = 0;
+    h += aperte.map(g => {
+      const c = calcolaGenerale(g);
+      totRes += c.residuo;
+      return `<div class="list-item" data-g="${g.id}">
+        <div class="main">
+          <div class="title">${esc(fornitoreDi(g).nome)} <span class="badge open">aperta</span></div>
+          <div class="sub">n. ${numGen(g)} · ${c.ritiri.length} pro forma · merce ${fmtEur(c.totale)} · acconti ${fmtEur(c.totAcconti)}</div>
+        </div>
+        <div class="right"><div class="muted" style="font-weight:400;font-size:.75rem">da pagare</div>${fmtEur(c.residuo)}</div>
+      </div>`;
+    }).join('');
+    if (aperte.length > 1) h += `<p class="muted" style="text-align:right">Totale da pagare: <b>${fmtEur(round2(totRes))}</b></p>`;
+  }
+
+  h += `<h3 class="sez">Fatture generali saldate</h3>`;
+  if (S.fornitori.length > 1) {
+    h += `<select id="filtro" style="margin-bottom:.75rem">
+      <option value="">Tutti i fornitori</option>
+      ${S.fornitori.map(f => `<option value="${f.id}" ${f.id === nav.filtroForn ? 'selected' : ''}>${esc(f.nome)}</option>`).join('')}
+    </select>`;
+  }
+  if (!chiuse.length) h += `<div class="muted" style="text-align:center">Nessuna fattura generale saldata.</div>`;
+  h += chiuse.map(g => {
+    const c = calcolaGenerale(g);
+    return `<div class="list-item" data-g="${g.id}">
+      <div class="main">
+        <div class="title">${esc(fornitoreDi(g).nome)} <span class="badge closed">&#128274; saldata</span></div>
+        <div class="sub">n. ${numGen(g)} del ${fmtDate(g.saldo.data)} · ${c.ritiri.length} pro forma</div>
+      </div>
+      <div class="right">${fmtEur(c.totale)}</div>
+    </div>`;
+  }).join('');
+
+  h += `<button class="fab" id="nuovoConto" aria-label="Apri conto fornitore">+</button>`;
+  v.innerHTML = h;
+
+  $('#filtro')?.addEventListener('change', e => { nav.filtroForn = e.target.value; render(); });
+  $$('[data-g]', v).forEach(el => el.addEventListener('click', () => apriGenerale(el.dataset.g)));
+  $('#nuovoConto').addEventListener('click', () => {
+    if (!S.fornitori.length) { toast('Prima aggiungi almeno un fornitore'); return vaiTab('fornitori'); }
+    dialogForm(`<h2>Conto fornitore</h2>
+      <p class="muted">Apre la fattura generale in corso del fornitore (utile per registrare un acconto prima del ritiro).</p>
+      <label>Fornitore</label>
+      <select name="fornitoreId">${S.fornitori.map(f => `<option value="${f.id}">${esc(f.nome)}</option>`).join('')}</select>`,
+      d => {
+        const g = generaleAperta(d.fornitoreId, true);
+        save();
+        setTimeout(() => apriGenerale(g.id), 0);
+      }, { okLabel: 'Apri', noFocus: true });
+  });
+}
+
+function viewGenerale(v, g) {
+  const c = calcolaGenerale(g);
+  const f = fornitoreDi(g);
+  setTitle(`Fattura generale ${numGen(g)}`);
+
+  let h = '';
+  if (g.chiusa) {
+    h += `<div class="card banner-ok">&#128274; <b>Saldata il ${fmtDate(g.saldo.data)}</b>. La fattura generale e tutte le pro forma incluse sono bloccate.</div>`;
+  }
+  h += `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:.5rem">
+      <div><h2>${esc(f.nome)}</h2>
+        <div class="muted">Fattura generale n. ${numGen(g)}${g.chiusa ? ' del ' + fmtDate(g.saldo.data) : ' · aperta dal ' + fmtDate(g.creata)}</div>
+        ${g.pdfSalvato ? `<div class="muted">PDF salvato il ${new Date(g.pdfSalvato).toLocaleString('it-IT')}</div>` : ''}
+      </div>
+      ${g.chiusa ? '<span class="badge closed">&#128274; saldata</span>' : '<span class="badge open">aperta</span>'}
+    </div>
+  </div>`;
+
+  // Situazione
+  h += `<div class="card"><h3>Situazione${g.chiusa ? '' : ' al ' + fmtDate(today())}</h3>
+    <table class="summary">
+      <tr><td>Totale merce (${c.ritiri.length} pro forma, ${fmtKg(c.kg)} kg)</td><td>${fmtEur(c.totale)}</td></tr>
+      <tr><td>Acconti versati (${c.acconti.length})</td><td>&minus; ${fmtEur(c.totAcconti)}</td></tr>
+      ${g.chiusa ? `<tr><td>Saldo versato il ${fmtDate(g.saldo.data)}</td><td>&minus; ${fmtEur(c.saldo)}</td></tr>` : ''}
+    </table>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:.5rem">
+      <span class="muted">${g.chiusa ? (c.residuo ? 'Differenza non pagata' : 'Tutto saldato') : 'Residuo da pagare'}</span>
+      <span class="total-big">${fmtEur(c.residuo)}</span>
+    </div>
+  </div>`;
+
+  // Acconti
+  h += `<div class="card"><h3>Acconti</h3>`;
+  if (!c.acconti.length) h += `<div class="muted">Nessun acconto registrato.</div>`;
+  h += c.acconti.map(a => `<div class="list-item" data-acc="${a.id}" style="padding:.6rem .8rem">
+      <div class="main"><div class="title">${fmtDate(a.data)}</div><div class="sub">${esc(a.note || '')}</div></div>
+      <div class="right">${fmtEur(a.importo)}</div>
+    </div>`).join('');
+  if (!g.chiusa) h += `<button class="btn block" id="nuovoAcc" style="margin-top:.5rem">+ Aggiungi acconto</button>`;
+  h += `</div>`;
+
+  if (g.chiusa) {
+    h += `<div class="card"><h3>Saldo</h3>
+      <div>Pagato il <b>${fmtDate(g.saldo.data)}</b>: <b>${fmtEur(g.saldo.importo)}</b></div>
+      ${g.saldo.note ? `<div class="muted">${esc(g.saldo.note)}</div>` : ''}
+    </div>`;
+  }
+
+  // Pro forma incluse
+  h += `<div class="card"><h3>Pro forma incluse</h3>`;
+  if (!c.ritiri.length) h += `<div class="muted">Nessuna pro forma: le nuove pro forma di questo fornitore entreranno qui automaticamente.</div>`;
+  h += c.ritiri.map(({ r, c: rc }) => `<div class="list-item" data-r="${r.id}" style="padding:.6rem .8rem">
+      <div class="main">
+        <div class="title">N. ${r.numero}/${r.anno} · ${fmtDate(r.data)}
+          ${g.chiusa ? '' : `<span class="badge ${r.chiuso ? 'closed' : 'open'}">${r.chiuso ? 'chiusa' : 'in corso'}</span>`}</div>
+        <div class="sub">${rc.colli} colli · ${fmtKg(rc.kg)} kg</div>
+      </div>
+      <div class="right">${fmtEur(rc.totale)}</div>
+    </div>`).join('');
+  h += `</div>`;
+
+  // Riepilogo per merce
+  if (c.merci.length) {
+    h += `<div class="card"><h3>Riepilogo per merce</h3>
+      <table class="summary">
+        <thead><tr><th>Merce</th><th>Colli</th><th>Kg</th><th>€/kg</th><th>Importo</th></tr></thead>
+        <tbody>${c.merci.map(m => `<tr><td>${esc(m.nome)}</td><td>${m.colli}</td><td>${fmtKg(m.kg)}</td><td>${fmtEur(m.prezzo)}</td><td>${fmtEur(m.importo)}</td></tr>`).join('')}</tbody>
+        <tfoot><tr><td>Totale</td><td>${c.colli}</td><td>${fmtKg(c.kg)}</td><td></td><td>${fmtEur(c.totale)}</td></tr></tfoot>
+      </table>
+      ${round2(c.merci.reduce((s, m) => s + m.importo, 0)) !== c.totale ? '<p class="muted">Piccole differenze di centesimi sono dovute agli arrotondamenti delle singole pro forma; fa fede il totale delle pro forma.</p>' : ''}
+    </div>`;
+  }
+
+  // Azioni
+  h += `<div class="card">
+    <button class="btn primary block" id="gDrive">&#9729; Salva PDF su Google Drive</button>
+    ${g.driveLink ? `<p class="muted" style="text-align:center"><a href="${esc(g.driveLink)}" target="_blank" rel="noopener">Apri su Drive</a></p>` : ''}
+    <div class="btn-row">
+      <button class="btn" id="gShare">&#128228; Condividi</button>
+      <button class="btn" id="gDown">&#11015; Scarica</button>
+      <button class="btn" id="gView">&#128065; Anteprima</button>
+    </div>
+    ${g.chiusa
+      ? `<div class="btn-row"><button class="btn" id="gDriveTutti">&#9729; Aggiorna su Drive anche tutte le pro forma</button></div>
+         <div class="btn-row"><button class="btn danger" id="gAnnulla">Annulla saldo</button></div>`
+      : `<div class="btn-row"><button class="btn primary" id="gSaldo" style="background:var(--ok);border-color:var(--ok)">&#10004; Registra saldo e chiudi</button></div>`}
+  </div>`;
+
+  v.innerHTML = h;
+
+  $$('[data-r]', v).forEach(el => el.addEventListener('click', () => apriRitiro(el.dataset.r)));
+  if (!g.chiusa) $$('[data-acc]', v).forEach(el => el.addEventListener('click', () => formAcconto(g, g.acconti.find(a => a.id === el.dataset.acc))));
+  $('#nuovoAcc')?.addEventListener('click', () => formAcconto(g, null));
+  $('#gSaldo')?.addEventListener('click', () => formSaldo(g));
+  $('#gAnnulla')?.addEventListener('click', () => annullaSaldo(g));
+
+  const okPdf = () => {
+    if (!S.azienda.ragioneSociale) { alert('Imposta prima la tua ragione sociale in Impostazioni.'); return false; }
+    return true;
+  };
+  $('#gDrive').addEventListener('click', () => {
+    if (!okPdf()) return;
+    salvaSuDrive(g, () => creaPdfGenerale(g), $('#gDrive'));
+  });
+  $('#gShare').addEventListener('click', () => {
+    if (!okPdf()) return;
+    const { doc, nome } = creaPdfGenerale(g);
+    condividiFile(doc.output('blob'), nome, 'application/pdf');
+  });
+  $('#gDown').addEventListener('click', () => { if (okPdf()) { const { doc, nome } = creaPdfGenerale(g); doc.save(nome); } });
+  $('#gView').addEventListener('click', () => { if (okPdf()) window.open(creaPdfGenerale(g).doc.output('bloburl'), '_blank'); });
+  $('#gDriveTutti')?.addEventListener('click', () => { if (okPdf()) salvaTuttiSuDrive(g, $('#gDriveTutti')); });
+}
+
+function formAcconto(g, a) {
+  dialogForm(`<h2>${a ? 'Modifica acconto' : 'Nuovo acconto'}</h2>
+    <p class="muted">${esc(fornitoreDi(g).nome)} · fattura generale ${numGen(g)}</p>
+    <label>Data</label>
+    <input type="date" name="data" value="${a ? a.data : today()}" required>
+    <label>Importo (€)</label>
+    <input name="importo" inputmode="decimal" value="${a ? a.importo.toLocaleString('it-IT', { minimumFractionDigits: 2 }) : ''}" placeholder="0,00" required>
+    <label>Note</label>
+    <input name="note" value="${esc(a?.note)}" placeholder="es. contanti, bonifico, assegno">`,
+    d => {
+      const importo = parseNum(d.importo);
+      if (!(importo > 0)) { toast('Importo non valido'); return false; }
+      const dati = { data: d.data, importo: round2(importo), note: d.note.trim() };
+      if (a) Object.assign(a, dati);
+      else g.acconti.push({ id: uid(), ...dati });
+      save(); render();
+      toast(a ? 'Acconto modificato' : 'Acconto registrato');
+    }, {
+      noFocus: true,
+      onDelete: a ? () => {
+        if (!confirm(`Eliminare l'acconto del ${fmtDate(a.data)} di ${fmtEur(a.importo)}?`)) return false;
+        g.acconti = g.acconti.filter(x => x !== a);
+        save(); render();
+      } : null
+    });
+}
+
+function formSaldo(g) {
+  const rit = ritiriDi(g);
+  if (!rit.length) return alert('Questa fattura generale non contiene pro forma da saldare.');
+  const ultima = rit[rit.length - 1].data;
+  dialogForm(`<h2>Registra saldo</h2>
+    <p class="muted">${esc(fornitoreDi(g).nome)} · fattura generale ${numGen(g)}</p>
+    <label>Data del saldo *</label>
+    <input type="date" name="data" value="${today()}" required>
+    <label>Includi le pro forma fino al</label>
+    <input type="date" name="fino" value="${ultima}" required>
+    <label>Importo pagato a saldo (€)</label>
+    <input name="importo" inputmode="decimal" placeholder="vuoto = tutto il residuo">
+    <label>Note</label>
+    <input name="note" placeholder="es. bonifico, assegno n. ...">
+    <p class="muted">Le pro forma con data successiva passeranno automaticamente alla nuova fattura generale.</p>`,
+    d => {
+      const incl = rit.filter(r => r.data <= d.fino);
+      const escl = rit.filter(r => r.data > d.fino);
+      if (!incl.length) { alert('Nessuna pro forma fino a quella data.'); return false; }
+      const tot = round2(incl.reduce((s, r) => s + calcola(r).totale, 0));
+      const acc = round2(g.acconti.reduce((s, a) => s + a.importo, 0));
+      const residuo = round2(tot - acc);
+      const importo = d.importo.trim() ? parseNum(d.importo) : residuo;
+      if (!Number.isFinite(importo)) { toast('Importo non valido'); return false; }
+      const diff = round2(residuo - importo);
+      const aperte = incl.filter(r => !r.chiuso).length;
+      let msg = `SALDO fattura generale ${numGen(g)}\n${fornitoreDi(g).nome}\n\n` +
+        `${incl.length} pro forma: ${fmtEur(tot)}\nAcconti: − ${fmtEur(acc)}\nSaldo del ${fmtDate(d.data)}: − ${fmtEur(importo)}`;
+      if (diff) msg += `\n\n⚠ Differenza non pagata: ${fmtEur(diff)}`;
+      if (aperte) msg += `\n\n${aperte} pro forma ancora aperte verranno chiuse.`;
+      if (escl.length) msg += `\n\n${escl.length} pro forma successive al ${fmtDate(d.fino)} passeranno alla nuova fattura generale.`;
+      msg += '\n\nDopo il saldo la fattura generale e tutte le pro forma incluse saranno BLOCCATE. Confermi?';
+      if (!confirm(msg)) return false;
+
+      g.saldo = { data: d.data, importo: round2(importo), note: d.note.trim(), fino: d.fino };
+      g.chiusa = true;
+      g.fornitoreSnap = { ...fornitoreDi(g) };
+      incl.forEach(r => { r.chiuso = true; r.fornitoreSnap = { ...fornitoreDi(r) }; });
+      if (escl.length) {
+        const nuova = generaleAperta(g.fornitoreId, true);
+        escl.forEach(r => { r.generaleId = nuova.id; });
+      }
+      save(); render();
+      toast('Saldo registrato ✔');
+    }, { okLabel: 'Registra saldo', noFocus: true });
+}
+
+function annullaSaldo(g) {
+  const ultima = S.generali.filter(x => x.fornitoreId === g.fornitoreId && x.chiusa)
+    .sort((a, b) => b.saldo.data.localeCompare(a.saldo.data) || b.numero - a.numero)[0];
+  if (ultima !== g) return alert(`Si può annullare solo l'ultimo saldo di questo fornitore (fattura generale ${numGen(ultima)}).`);
+  const aperta = generaleAperta(g.fornitoreId);
+  let msg = `Annullare il saldo della fattura generale ${numGen(g)}?\nLa fattura generale e le sue pro forma torneranno modificabili.`;
+  if (aperta) msg += `\n\nLa fattura generale aperta ${numGen(aperta)} (${ritiriDi(aperta).length} pro forma, ${aperta.acconti.length} acconti) verrà unita a questa.`;
+  if (!confirm(msg)) return;
+  if (aperta) {
+    ritiriDi(aperta).forEach(r => { r.generaleId = g.id; });
+    g.acconti.push(...aperta.acconti);
+    S.generali = S.generali.filter(x => x !== aperta);
+  }
+  g.chiusa = false;
+  g.saldo = null;
+  save(); render();
+  toast('Saldo annullato');
 }
 
 /* ---------------- Vista: merci ---------------- */
@@ -685,6 +980,7 @@ function formFornitore(f) {
       if (f) {
         Object.assign(f, dati);
         S.ritiri.filter(r => r.fornitoreId === f.id && !r.chiuso).forEach(r => { r.fornitoreSnap = { ...f }; });
+        S.generali.filter(g => g.fornitoreId === f.id && !g.chiusa).forEach(g => { g.fornitoreSnap = { ...f }; });
       } else {
         S.fornitori.push({ id: uid(), ...dati });
       }
@@ -693,6 +989,7 @@ function formFornitore(f) {
       onDelete: f ? () => {
         if (!confirm(`Eliminare il fornitore "${f.nome}"? I ritiri già fatti restano nell'archivio.`)) return false;
         S.ritiri.filter(r => r.fornitoreId === f.id).forEach(r => { r.fornitoreSnap = { ...f }; });
+        S.generali.filter(g => g.fornitoreId === f.id).forEach(g => { g.fornitoreSnap = { ...f }; });
         S.fornitori = S.fornitori.filter(x => x !== f);
         save(); render();
       } : null
@@ -867,17 +1164,14 @@ function controllaPerPdf(r) {
   return true;
 }
 
-function creaPdf(r) {
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-  const A = S.azienda;
-  const f = fornitoreDi(r);
-  const c = calcola(r);
-  const M = 15, W = 210;
-  const ORO = [183, 121, 31], CREMA = [245, 239, 226];
-  const eur = n => pdfTxt(fmtEur(n));
+const PDF = { M: 15, W: 210, ORO: [183, 121, 31], CREMA: [245, 239, 226], VERDE: [47, 133, 90] };
+const eurPdf = n => pdfTxt(fmtEur(n));
+const nomeFilePulito = s => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
 
-  // Intestazione: dati azienda
+/** Intestazione comune: dati azienda, titolo, numero/data, riquadro fornitore. Ritorna la y di partenza. */
+function pdfIntestazione(doc, titolo, righeDx, f) {
+  const { M, W, ORO } = PDF;
+  const A = S.azienda;
   let y = 18;
   doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
   doc.text(pdfTxt(A.ragioneSociale), M, y, { maxWidth: 100 });
@@ -887,15 +1181,12 @@ function creaPdf(r) {
     A.telefono && 'Tel. ' + A.telefono, A.email].filter(Boolean);
   aLines.forEach(l => { doc.text(pdfTxt(l), M, y); y += 4.2; });
 
-  // Titolo documento
   doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(...ORO);
-  doc.text('FATTURA PRO FORMA', W - M, 18, { align: 'right' });
+  doc.text(titolo, W - M, 18, { align: 'right' });
   doc.setTextColor(0); doc.setFontSize(10); doc.setFont('helvetica', 'normal');
-  doc.text(`N. ${r.numero}/${r.anno}`, W - M, 25, { align: 'right' });
-  doc.text(`Data: ${fmtDate(r.data)}`, W - M, 30, { align: 'right' });
+  righeDx.forEach((t, i) => doc.text(pdfTxt(t), W - M, 25 + i * 5, { align: 'right' }));
 
-  // Riquadro fornitore
-  y = Math.max(y, 36) + 4;
+  y = Math.max(y, 26 + righeDx.length * 5) + 4;
   const fLines = [...(f.indirizzo || '').split('\n'), f.piva && 'P.IVA ' + f.piva,
     f.telefono && 'Tel. ' + f.telefono, f.email].filter(Boolean);
   const boxH = 13 + fLines.length * 4.2;
@@ -905,15 +1196,59 @@ function creaPdf(r) {
   doc.text(pdfTxt(f.nome), 114, y + 10, { maxWidth: W - M - 118 });
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
   fLines.forEach((l, i) => doc.text(pdfTxt(l), 114, y + 14.5 + i * 4.2));
-  y += boxH + 8;
+  return y + boxH + 8;
+}
+
+function pdfPiePagina(doc, testo) {
+  const { M, W } = PDF;
+  const A = S.azienda;
+  const pagine = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pagine; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8); doc.setTextColor(120); doc.setFont('helvetica', 'normal');
+    const fy = 287;
+    if (A.notaPdf) {
+      const nl = doc.splitTextToSize(pdfTxt(A.notaPdf), W - 2 * M);
+      doc.text(nl, M, fy - nl.length * 3.5);
+    }
+    doc.text(testo, M, fy);
+    doc.text(`Pagina ${i} di ${pagine}`, W - M, fy, { align: 'right' });
+  }
+}
+
+/** Riquadro colorato (es. timbro SALDATA) */
+function pdfRiquadro(doc, y, testo, colore) {
+  const { M, W } = PDF;
+  doc.setDrawColor(...colore); doc.setFillColor(255, 255, 255); doc.setLineWidth(0.6);
+  doc.roundedRect(M, y, W - 2 * M, 10, 2, 2, 'S');
+  doc.setLineWidth(0.2);
+  doc.setTextColor(...colore); doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+  doc.text(pdfTxt(testo), W / 2, y + 6.6, { align: 'center' });
+  doc.setTextColor(0); doc.setFont('helvetica', 'normal');
+  return y + 15;
+}
+
+function creaPdf(r) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const { M, W, ORO, CREMA, VERDE } = PDF;
+  const f = fornitoreDi(r);
+  const c = calcola(r);
+  const g = r.generaleId ? getGenerale(r.generaleId) : null;
+
+  let y = pdfIntestazione(doc, 'FATTURA PRO FORMA', [`N. ${r.numero}/${r.anno}`, `Data: ${fmtDate(r.data)}`], f);
+
+  if (g && g.chiusa) {
+    y = pdfRiquadro(doc, y - 3, `SALDATA con fattura generale n. ${numGen(g)} del ${fmtDate(g.saldo.data)}`, VERDE);
+  }
 
   // Riepilogo per merce
   doc.autoTable({
     startY: y,
     margin: { left: M, right: M },
     head: [['Merce', 'Colli', 'Peso totale (kg)', 'Prezzo (€/kg)', 'Importo']],
-    body: c.righe.map(riga => [pdfTxt(riga.nome), riga.pesate.length, fmtKg(riga.kg), eur(riga.prezzo), eur(riga.importo)]),
-    foot: [['Totale', c.colli, fmtKg(c.kg), '', eur(c.totale)]],
+    body: c.righe.map(riga => [pdfTxt(riga.nome), riga.pesate.length, fmtKg(riga.kg), eurPdf(riga.prezzo), eurPdf(riga.importo)]),
+    foot: [['Totale', c.colli, fmtKg(c.kg), '', eurPdf(c.totale)]],
     theme: 'grid',
     styles: { fontSize: 10, cellPadding: 2.5 },
     headStyles: { fillColor: ORO, textColor: 255 },
@@ -924,10 +1259,11 @@ function creaPdf(r) {
   y = doc.lastAutoTable.finalY + 8;
 
   doc.setFont('helvetica', 'bold'); doc.setFontSize(13);
-  doc.text(`TOTALE DOCUMENTO: ${eur(c.totale)}`, W - M, y, { align: 'right' });
+  doc.text(`TOTALE DOCUMENTO: ${eurPdf(c.totale)}`, W - M, y, { align: 'right' });
   y += 6;
   doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(110);
   doc.text('Importi senza IVA.', W - M, y, { align: 'right' });
+  if (g && !g.chiusa) doc.text(`Inclusa nella fattura generale n. ${numGen(g)}.`, M, y);
   doc.setTextColor(0);
   y += 6;
 
@@ -969,22 +1305,101 @@ function creaPdf(r) {
   doc.setFontSize(8); doc.setTextColor(110);
   doc.text('Pesi espressi in kg.', M, y + 2);
 
-  // Piè di pagina su ogni pagina
-  const pagine = doc.internal.getNumberOfPages();
-  for (let i = 1; i <= pagine; i++) {
-    doc.setPage(i);
-    doc.setFontSize(8); doc.setTextColor(120); doc.setFont('helvetica', 'normal');
-    let fy = 287;
-    if (A.notaPdf) {
-      const nl = doc.splitTextToSize(pdfTxt(A.notaPdf), W - 2 * M);
-      doc.text(nl, M, fy - nl.length * 3.5);
-    }
-    doc.text('Documento pro forma privo di valore fiscale', M, fy);
-    doc.text(`Pagina ${i} di ${pagine}`, W - M, fy, { align: 'right' });
+  pdfPiePagina(doc, 'Documento pro forma privo di valore fiscale');
+
+  const nome = `ProForma_${r.anno}-${String(r.numero).padStart(3, '0')}_${nomeFilePulito(f.nome)}_${r.data}.pdf`;
+  return { doc, nome };
+}
+
+function creaPdfGenerale(g) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const { M, W, ORO, CREMA, VERDE } = PDF;
+  const f = fornitoreDi(g);
+  const c = calcolaGenerale(g);
+  const tabella = (opts) => doc.autoTable({
+    margin: { left: M, right: M }, theme: 'grid',
+    styles: { fontSize: 9.5, cellPadding: 2.2 },
+    headStyles: { fillColor: ORO, textColor: 255 },
+    footStyles: { fillColor: CREMA, textColor: 0, fontStyle: 'bold' },
+    didParseCell: d => { if (d.column.index > 0) d.cell.styles.halign = 'right'; },
+    ...opts
+  });
+  const titoletto = (t, y) => {
+    if (y > 255) { doc.addPage(); y = 20; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11.5); doc.text(pdfTxt(t), M, y);
+    doc.setFont('helvetica', 'normal');
+    return y + 2;
+  };
+
+  const righeDx = g.chiusa
+    ? [`N. ${numGen(g)}`, `Data: ${fmtDate(g.saldo.data)}`]
+    : [`N. ${numGen(g)}`, `Situazione al ${fmtDate(today())}`];
+  let y = pdfIntestazione(doc, 'FATTURA GENERALE', righeDx, f);
+  y = g.chiusa
+    ? pdfRiquadro(doc, y - 3, `SALDATA il ${fmtDate(g.saldo.data)}`, VERDE)
+    : pdfRiquadro(doc, y - 3, `APERTA – situazione provvisoria al ${fmtDate(today())}`, ORO);
+
+  // Pro forma incluse
+  y = titoletto('Pro forma incluse', y + 2);
+  tabella({
+    startY: y,
+    head: [['Pro forma', 'Data', 'Colli', 'Peso (kg)', 'Importo']],
+    body: c.ritiri.map(({ r, c: rc }) => [`N. ${r.numero}/${r.anno}`, fmtDate(r.data), rc.colli, fmtKg(rc.kg), eurPdf(rc.totale)]),
+    foot: [['Totale', '', c.colli, fmtKg(c.kg), eurPdf(c.totale)]]
+  });
+  y = doc.lastAutoTable.finalY + 8;
+
+  // Riepilogo per merce
+  if (c.merci.length) {
+    y = titoletto('Riepilogo per merce', y);
+    tabella({
+      startY: y,
+      head: [['Merce', 'Colli', 'Peso (kg)', 'Prezzo (€/kg)', 'Importo']],
+      body: c.merci.map(m => [pdfTxt(m.nome), m.colli, fmtKg(m.kg), eurPdf(m.prezzo), eurPdf(m.importo)])
+    });
+    y = doc.lastAutoTable.finalY + 8;
   }
 
-  const pulito = s => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
-  const nome = `ProForma_${r.anno}-${String(r.numero).padStart(3, '0')}_${pulito(f.nome)}_${r.data}.pdf`;
+  // Acconti
+  y = titoletto('Acconti versati', y);
+  tabella({
+    startY: y,
+    head: [['Data', 'Note', 'Importo']],
+    body: c.acconti.length ? c.acconti.map(a => [fmtDate(a.data), pdfTxt(a.note || ''), eurPdf(a.importo)]) : [['–', 'Nessun acconto', eurPdf(0)]],
+    foot: [['Totale acconti', '', eurPdf(c.totAcconti)]],
+    columnStyles: { 0: { cellWidth: 30 }, 2: { cellWidth: 40 } },
+    didParseCell: d => { d.cell.styles.halign = d.column.index === 2 ? 'right' : 'left'; }
+  });
+  y = doc.lastAutoTable.finalY + 8;
+
+  // Riepilogo finale
+  const righe = [
+    ['Totale merce', eurPdf(c.totale)],
+    ['Acconti versati', '- ' + eurPdf(c.totAcconti)]
+  ];
+  if (g.chiusa) righe.push([`Saldo versato il ${fmtDate(g.saldo.data)}${g.saldo.note ? ' (' + pdfTxt(g.saldo.note) + ')' : ''}`, '- ' + eurPdf(c.saldo)]);
+  righe.push([g.chiusa ? (c.residuo ? 'DIFFERENZA NON PAGATA' : 'RESIDUO') : 'RESIDUO DA PAGARE', eurPdf(c.residuo)]);
+  if (y > 240) { doc.addPage(); y = 20; }
+  doc.autoTable({
+    startY: y,
+    margin: { left: 80, right: M },
+    theme: 'plain',
+    body: righe,
+    styles: { fontSize: 10.5, cellPadding: 2 },
+    columnStyles: { 0: { cellWidth: 'auto' }, 1: { halign: 'right', cellWidth: 38 } },
+    didParseCell: d => {
+      if (d.row.index === righe.length - 1) { d.cell.styles.fontStyle = 'bold'; d.cell.styles.fontSize = 12.5; d.cell.styles.fillColor = CREMA; }
+    }
+  });
+  y = doc.lastAutoTable.finalY + 6;
+  doc.setFontSize(8); doc.setTextColor(110);
+  doc.text('Importi senza IVA. Il dettaglio delle pesate è riportato nelle singole pro forma.', M, y);
+
+  pdfPiePagina(doc, 'Documento riepilogativo privo di valore fiscale');
+
+  const data = g.chiusa ? g.saldo.data : today();
+  const nome = `FatturaGenerale_${g.anno}-G${String(g.numero).padStart(3, '0')}_${nomeFilePulito(f.nome)}_${g.chiusa ? 'saldata_' : 'aperta_'}${data}.pdf`;
   return { doc, nome };
 }
 
@@ -1071,48 +1486,80 @@ async function caricaFile(blob, nome, parentId, esistenteId) {
   return driveFetch(url, { method: esistenteId ? 'PATCH' : 'POST', body: form });
 }
 
-async function cartellaDestinazione(r) {
+async function cartellaDestinazione(obj) {
   let parent = await trovaOCreaCartella(S.drive.cartella || 'Fatti Conti - Pro Forma');
-  if (S.drive.perFornitore) parent = await trovaOCreaCartella(fornitoreDi(r).nome, parent);
+  if (S.drive.perFornitore) parent = await trovaOCreaCartella(fornitoreDi(obj).nome, parent);
   return parent;
 }
 
-async function salvaSuDrive(r) {
+/** Carica (o aggiorna) su Drive il PDF di obj (pro forma o fattura generale). */
+async function caricaPdfSuDrive(obj, creaFn, parent) {
+  const { doc, nome } = creaFn();
+  let esistente = null;
+  if (obj.driveFileId) {
+    try {
+      const f = await driveFetch(`${DRIVE_API}/${obj.driveFileId}?fields=id,trashed,parents`);
+      if (!f.trashed && f.parents?.includes(parent)) esistente = f.id;
+    } catch (e) { if (e.status !== 404) throw e; }
+  }
+  const res = await caricaFile(doc.output('blob'), nome, parent, esistente);
+  obj.driveFileId = res.id;
+  obj.driveLink = res.webViewLink;
+  obj.pdfSalvato = Date.now();
+  save();
+  return esistente;
+}
+
+/** Controlli comuni prima di usare Drive. Ritorna true se si può procedere. */
+async function prontoPerDrive(fallbackPdf) {
   if (!S.drive.clientId) {
     if (confirm('Il collegamento diretto a Google Drive non è ancora configurato.\n\nOK = vai alle Impostazioni per configurarlo\nAnnulla = usa la condivisione del telefono')) {
-      nav.tab = 'impostazioni';
-      history.back();
-    } else {
-      const { doc, nome } = creaPdf(r);
+      vaiTab('impostazioni');
+    } else if (fallbackPdf) {
+      const { doc, nome } = fallbackPdf();
       condividiFile(doc.output('blob'), nome, 'application/pdf');
     }
-    return;
+    return false;
   }
-  if (!navigator.onLine) return alert('Sei offline. Il ritiro resta salvato: potrai inviare il PDF a Drive quando torni connesso.');
+  if (!navigator.onLine) { alert('Sei offline. I dati restano salvati: potrai inviare il PDF a Drive quando torni connesso.'); return false; }
+  try { await ottieniToken(); } catch (e) { alert(e.message); return false; }
+  return true;
+}
 
-  try { await ottieniToken(); } catch (e) { return alert(e.message); }
-
-  const btn = $('#drive');
+async function salvaSuDrive(obj, creaFn = () => creaPdf(obj), btn = $('#drive')) {
+  if (!(await prontoPerDrive(creaFn))) return;
   if (btn) { btn.disabled = true; btn.textContent = 'Caricamento su Google Drive…'; }
   try {
-    const { doc, nome } = creaPdf(r);
-    const parent = await cartellaDestinazione(r);
-    let esistente = null;
-    if (r.driveFileId) {
-      try {
-        const f = await driveFetch(`${DRIVE_API}/${r.driveFileId}?fields=id,trashed,parents`);
-        if (!f.trashed && f.parents?.includes(parent)) esistente = f.id;
-      } catch (e) { if (e.status !== 404) throw e; }
-    }
-    const res = await caricaFile(doc.output('blob'), nome, parent, esistente);
-    r.driveFileId = res.id;
-    r.driveLink = res.webViewLink;
-    r.pdfSalvato = Date.now();
-    save();
+    const parent = await cartellaDestinazione(obj);
+    const esistente = await caricaPdfSuDrive(obj, creaFn, parent);
     toast(esistente ? 'PDF aggiornato su Google Drive ✔' : 'PDF salvato su Google Drive ✔');
   } catch (e) {
     console.error(e);
     alert(e.message);
+  }
+  render();
+}
+
+/** Carica su Drive la fattura generale e tutte le sue pro forma */
+async function salvaTuttiSuDrive(g, btn) {
+  if (!(await prontoPerDrive(null))) return;
+  const ritiri = ritiriDi(g).filter(r => r.pesate.length);
+  const tot = ritiri.length + 1;
+  let fatti = 0;
+  const avanza = () => { if (btn) { btn.disabled = true; btn.textContent = `Caricamento su Drive… ${fatti}/${tot}`; } };
+  avanza();
+  try {
+    const parent = await cartellaDestinazione(g);
+    await caricaPdfSuDrive(g, () => creaPdfGenerale(g), parent);
+    fatti++; avanza();
+    for (const r of ritiri) {
+      await caricaPdfSuDrive(r, () => creaPdf(r), parent);
+      fatti++; avanza();
+    }
+    toast(`${fatti} PDF salvati su Google Drive ✔`);
+  } catch (e) {
+    console.error(e);
+    alert(`${e.message}\n\nCaricati ${fatti} PDF su ${tot}. Puoi riprovare: quelli già caricati verranno aggiornati, non duplicati.`);
   }
   render();
 }
