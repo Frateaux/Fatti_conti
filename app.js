@@ -741,6 +741,26 @@ function viewGenerale(v, g) {
     </div>`;
   }
 
+  // Dettaglio pesate di tutti i ritiri
+  if (c.ritiri.some(({ r }) => r.pesate.length)) {
+    h += `<div class="card"><h3>Dettaglio pesate dei ritiri</h3>`;
+    for (const { r, c: rc } of c.ritiri) {
+      if (!rc.righe.length) continue;
+      h += `<div style="margin:.8rem 0 .3rem;padding-top:.4rem;border-top:1px solid var(--border)">
+        <b>N. ${r.numero}/${r.anno} del ${fmtDate(r.data)}</b>
+        <span class="muted">· ${rc.colli} colli · ${fmtKg(rc.kg)} kg · ${fmtEur(rc.totale)}</span>
+      </div>`;
+      for (const riga of rc.righe) {
+        h += `<div style="margin:.4rem 0 .2rem;font-size:.9rem"><b>${esc(riga.nome)}</b>
+          <span class="muted">· ${riga.pesate.length} colli · ${fmtKg(riga.kg)} kg</span></div>
+          <div class="weights">
+            ${riga.pesate.map((p, i) => `<span class="weight"><small>${i + 1})</small>${fmtKg(p.peso)}</span>`).join('')}
+          </div>`;
+      }
+    }
+    h += `</div>`;
+  }
+
   // Azioni
   h += `<div class="card">
     <button class="btn primary block" id="gDrive">&#9729; Salva PDF su Google Drive</button>
@@ -1394,7 +1414,48 @@ function creaPdfGenerale(g) {
   });
   y = doc.lastAutoTable.finalY + 6;
   doc.setFontSize(8); doc.setTextColor(110);
-  doc.text('Importi senza IVA. Il dettaglio delle pesate è riportato nelle singole pro forma.', M, y);
+  doc.text('Importi senza IVA.', M, y);
+  y += 6;
+
+  // Dettaglio pesate di tutti i ritiri
+  if (c.ritiri.some(({ r }) => r.pesate.length)) {
+    if (y > 220) { doc.addPage(); y = 20; }
+    y += 2;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(0);
+    doc.text('Dettaglio pesate di tutti i ritiri', M, y);
+    y += 4;
+    const COLS = 6;
+    for (const { r, c: rc } of c.ritiri) {
+      if (!rc.righe.length) continue;
+      if (y > 240) { doc.addPage(); y = 20; }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10);
+      doc.text(pdfTxt(`Pro forma N. ${r.numero}/${r.anno} del ${fmtDate(r.data)}  –  Totale: ${fmtKg(rc.kg)} kg, ${eurPdf(rc.totale)}`), M, y);
+      doc.setFont('helvetica', 'normal');
+      y += 2;
+      for (const riga of rc.righe) {
+        const celle = riga.pesate.map((p, i) => `${i + 1})  ${fmtKg(p.peso)}`);
+        const body = [];
+        for (let i = 0; i < celle.length; i += COLS) {
+          const row = celle.slice(i, i + COLS);
+          while (row.length < COLS) row.push('');
+          body.push(row);
+        }
+        doc.autoTable({
+          startY: y + 2,
+          margin: { left: M, right: M },
+          head: [[{ content: pdfTxt(`${riga.nome}  –  ${riga.pesate.length} colli  –  ${fmtKg(riga.kg)} kg  x  ${fmtEur(riga.prezzo)}/kg  =  ${fmtEur(riga.importo)}`), colSpan: COLS }]],
+          body,
+          theme: 'grid',
+          styles: { fontSize: 8.5, cellPadding: 1.6 },
+          headStyles: { fillColor: CREMA, textColor: 0, fontStyle: 'bold' },
+          rowPageBreak: 'avoid'
+        });
+        y = doc.lastAutoTable.finalY + 4;
+      }
+    }
+    doc.setFontSize(8); doc.setTextColor(110);
+    doc.text('Pesi espressi in kg.', M, y + 2);
+  }
 
   pdfPiePagina(doc, 'Documento riepilogativo privo di valore fiscale');
 
