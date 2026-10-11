@@ -664,7 +664,7 @@ function render() {
     if (top.tipo === 'generale') { const g = getGenerale(top.id); if (g) return viewGenerale(v, g); }
     nav.stack.pop();
   }
-  ({ ritiri: viewRitiri, conti: viewConti, merci: viewMerci, fornitori: viewFornitori, impostazioni: viewImpostazioni })[nav.tab](v);
+  ({ ritiri: viewRitiri, conti: viewConti, stats: viewStats, merci: viewMerci, fornitori: viewFornitori, impostazioni: viewImpostazioni })[nav.tab](v);
 }
 
 /* ---------------- Vista: elenco ritiri ---------------- */
@@ -1329,6 +1329,423 @@ function annullaSaldo(g) {
   g.saldo = null;
   save(); render();
   toast('Saldo annullato');
+}
+
+/* ---------------- Vista: Report e Statistiche ---------------- */
+
+const statsState = {
+  periodo: 'mese_corrente',
+  dal: '',
+  al: '',
+  fornitoreId: ''
+};
+
+const NOMI_MESI = ['Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno', 'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre'];
+function fmtMeseAnno(ym) {
+  if (!ym) return '';
+  const [y, m] = ym.split('-');
+  const idx = Number(m) - 1;
+  return `${NOMI_MESI[idx] || m} ${y}`;
+}
+
+function calcolaIntervalloStats(periodo) {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = d.getMonth();
+  const pad = n => String(n).padStart(2, '0');
+  if (periodo === 'mese_corrente') {
+    const primo = `${y}-${pad(m + 1)}-01`;
+    const ultimoGiorno = new Date(y, m + 1, 0).getDate();
+    return { dal: primo, al: `${y}-${pad(m + 1)}-${pad(ultimoGiorno)}`, etichetta: `Questo mese (${pad(m + 1)}/${y})` };
+  }
+  if (periodo === 'mese_scorso') {
+    const prev = new Date(y, m - 1, 1);
+    const py = prev.getFullYear();
+    const pm = prev.getMonth();
+    const ultimoGiorno = new Date(py, pm + 1, 0).getDate();
+    return {
+      dal: `${py}-${pad(pm + 1)}-01`,
+      al: `${py}-${pad(pm + 1)}-${pad(ultimoGiorno)}`,
+      etichetta: `Mese scorso (${pad(pm + 1)}/${py})`
+    };
+  }
+  if (periodo === 'anno_corrente') {
+    return {
+      dal: `${y}-01-01`,
+      al: `${y}-12-31`,
+      etichetta: `Anno ${y}`
+    };
+  }
+  if (periodo === 'custom') {
+    const dal = statsState.dal || `${y}-01-01`;
+    const al = statsState.al || today();
+    return {
+      dal,
+      al,
+      etichetta: `Dal ${fmtDate(dal)} al ${fmtDate(al)}`
+    };
+  }
+  // 'tutto'
+  return { dal: '1970-01-01', al: '2099-12-31', etichetta: 'Tutto lo storico' };
+}
+
+function calcolaStatistiche(dal, al, fornitoreId) {
+  const ritiriPeriodo = S.ritiri.filter(r => (!dal || r.data >= dal) && (!al || r.data <= al));
+
+  let periodoSpeso = 0, periodoKg = 0, periodoColli = 0;
+  for (const r of ritiriPeriodo) {
+    const c = calcola(r);
+    periodoSpeso += c.totale;
+    periodoKg += c.kg;
+    periodoColli += c.colli;
+  }
+  periodoSpeso = round2(periodoSpeso);
+  periodoKg = round3(periodoKg);
+
+  const ritiriTarget = fornitoreId ? ritiriPeriodo.filter(r => r.fornitoreId === fornitoreId) : ritiriPeriodo;
+
+  let totSpeso = 0, totKg = 0, totColli = 0;
+  const perFornitore = new Map();
+  const perMerce = new Map();
+  const perMese = new Map();
+
+  for (const r of ritiriTarget) {
+    const c = calcola(r);
+    totSpeso += c.totale;
+    totKg += c.kg;
+    totColli += c.colli;
+
+    const fid = r.fornitoreId || 'anonimo';
+    if (!perFornitore.has(fid)) {
+      const fObj = fornitoreDi(r);
+      perFornitore.set(fid, {
+        id: fid,
+        nome: fObj.nome || '(fornitore eliminato)',
+        fornitore: fObj,
+        ritiriCount: 0,
+        colli: 0,
+        kg: 0,
+        speso: 0,
+        merci: new Map()
+      });
+    }
+    const fData = perFornitore.get(fid);
+    fData.ritiriCount++;
+    fData.colli += c.colli;
+    fData.kg += c.kg;
+    fData.speso += c.totale;
+
+    for (const riga of c.righe) {
+      if (!perMerce.has(riga.merceId)) {
+        perMerce.set(riga.merceId, {
+          id: riga.merceId,
+          nome: riga.nome,
+          colli: 0,
+          kg: 0,
+          speso: 0,
+          fornitori: new Set()
+        });
+      }
+      const mData = perMerce.get(riga.merceId);
+      mData.colli += riga.pesate.length;
+      mData.kg += riga.kg;
+      mData.speso += riga.importo;
+      if (r.fornitoreId) mData.fornitori.add(r.fornitoreId);
+
+      if (!fData.merci.has(riga.merceId)) {
+        fData.merci.set(riga.merceId, {
+          id: riga.merceId,
+          nome: riga.nome,
+          colli: 0,
+          kg: 0,
+          speso: 0
+        });
+      }
+      const fm = fData.merci.get(riga.merceId);
+      fm.colli += riga.pesate.length;
+      fm.kg += riga.kg;
+      fm.speso += riga.importo;
+    }
+
+    const ym = (r.data || '').slice(0, 7);
+    if (ym) {
+      if (!perMese.has(ym)) {
+        perMese.set(ym, { ym, ritiriCount: 0, colli: 0, kg: 0, speso: 0 });
+      }
+      const ymData = perMese.get(ym);
+      ymData.ritiriCount++;
+      ymData.colli += c.colli;
+      ymData.kg += c.kg;
+      ymData.speso += c.totale;
+    }
+  }
+
+  totSpeso = round2(totSpeso);
+  totKg = round3(totKg);
+
+  const listaFornitori = [...perFornitore.values()].map(f => {
+    f.kg = round3(f.kg);
+    f.speso = round2(f.speso);
+    f.percSpeso = totSpeso > 0 ? round2((f.speso / totSpeso) * 100) : 0;
+    f.percKg = totKg > 0 ? round2((f.kg / totKg) * 100) : 0;
+    f.percSuPeriodoTotale = periodoSpeso > 0 ? round2((f.speso / periodoSpeso) * 100) : 0;
+    f.prezzoMedio = f.kg > 0 ? round2(f.speso / f.kg) : 0;
+    f.listaMerci = [...f.merci.values()].map(m => {
+      m.kg = round3(m.kg);
+      m.speso = round2(m.speso);
+      m.percKg = f.kg > 0 ? round2((m.kg / f.kg) * 100) : 0;
+      m.percSpeso = f.speso > 0 ? round2((m.speso / f.speso) * 100) : 0;
+      m.prezzoMedio = m.kg > 0 ? round2(m.speso / m.kg) : 0;
+      return m;
+    }).sort((a, b) => b.kg - a.kg);
+    return f;
+  }).sort((a, b) => b.speso - a.speso);
+
+  const listaMerci = [...perMerce.values()].map(m => {
+    m.kg = round3(m.kg);
+    m.speso = round2(m.speso);
+    m.percKg = totKg > 0 ? round2((m.kg / totKg) * 100) : 0;
+    m.percSpeso = totSpeso > 0 ? round2((m.speso / totSpeso) * 100) : 0;
+    m.prezzoMedio = m.kg > 0 ? round2(m.speso / m.kg) : 0;
+    m.numFornitori = m.fornitori.size;
+    return m;
+  }).sort((a, b) => b.kg - a.kg);
+
+  const listaMesi = [...perMese.values()].map(m => {
+    m.kg = round3(m.kg);
+    m.speso = round2(m.speso);
+    m.prezzoMedio = m.kg > 0 ? round2(m.speso / m.kg) : 0;
+    return m;
+  }).sort((a, b) => a.ym.localeCompare(b.ym));
+
+  const prezzoMedioGenerale = totKg > 0 ? round2(totSpeso / totKg) : 0;
+
+  return {
+    ritiriCount: ritiriTarget.length,
+    totSpeso,
+    totKg,
+    totColli,
+    prezzoMedioGenerale,
+    periodoSpeso,
+    periodoKg,
+    periodoColli,
+    fornitori: listaFornitori,
+    merci: listaMerci,
+    mesi: listaMesi
+  };
+}
+
+function viewStats(v) {
+  setTitle('Report & Statistiche');
+  const intervallo = calcolaIntervalloStats(statsState.periodo);
+  const st = calcolaStatistiche(intervallo.dal, intervallo.al, statsState.fornitoreId);
+  const fornitoreSelezionato = statsState.fornitoreId ? S.fornitori.find(f => f.id === statsState.fornitoreId) : null;
+
+  let h = '';
+
+  // Filtri periodo e fornitore
+  h += `<div class="card">
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:flex-end">
+      <div style="flex:1;min-width:140px">
+        <label>Periodo</label>
+        <select id="selPeriodoStats">
+          <option value="mese_corrente" ${statsState.periodo === 'mese_corrente' ? 'selected' : ''}>Questo mese</option>
+          <option value="mese_scorso" ${statsState.periodo === 'mese_scorso' ? 'selected' : ''}>Mese scorso</option>
+          <option value="anno_corrente" ${statsState.periodo === 'anno_corrente' ? 'selected' : ''}>Anno in corso</option>
+          <option value="tutto" ${statsState.periodo === 'tutto' ? 'selected' : ''}>Tutto lo storico</option>
+          <option value="custom" ${statsState.periodo === 'custom' ? 'selected' : ''}>Personalizzato…</option>
+        </select>
+      </div>
+      <div style="flex:1;min-width:160px">
+        <label>Filtra Fornitore</label>
+        <select id="selFornitoreStats">
+          <option value="">Tutti i fornitori</option>
+          ${S.fornitori.map(f => `<option value="${f.id}" ${statsState.fornitoreId === f.id ? 'selected' : ''}>${esc(f.nome)}</option>`).join('')}
+        </select>
+      </div>
+    </div>`;
+
+  if (statsState.periodo === 'custom') {
+    h += `<div style="display:flex;gap:.5rem;margin-top:.6rem">
+      <div style="flex:1"><label>Dal</label><input type="date" id="inpDalStats" value="${esc(intervallo.dal)}"></div>
+      <div style="flex:1"><label>Al</label><input type="date" id="inpAlStats" value="${esc(intervallo.al)}"></div>
+    </div>`;
+  }
+  h += `</div>`;
+
+  // KPI Grid
+  h += `<div class="kpi-grid">
+    <div class="kpi-card">
+      <div class="kpi-label">Totale Speso</div>
+      <div class="kpi-val">${fmtEur(st.totSpeso)}</div>
+      <div class="kpi-sub">${st.ritiriCount} ritiri</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Totale Ritirato</div>
+      <div class="kpi-val">${fmtKg(st.totKg)} <span style="font-size:.8rem;font-weight:normal">kg</span></div>
+      <div class="kpi-sub">${st.totColli} colli pesati</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Prezzo Medio</div>
+      <div class="kpi-val">${fmtEur(st.prezzoMedioGenerale)}</div>
+      <div class="kpi-sub">al kg ponderato</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Periodo</div>
+      <div class="kpi-val" style="font-size:1.05rem;padding-top:.15rem">${esc(intervallo.etichetta)}</div>
+      <div class="kpi-sub">${fornitoreSelezionato ? esc(fornitoreSelezionato.nome) : 'Tutti i fornitori'}</div>
+    </div>
+  </div>`;
+
+  if (!st.ritiriCount) {
+    h += `<div class="empty">Nessun ritiro registrato per questo periodo e filtro.<br>Seleziona un periodo differente o rimuovi il filtro fornitore.</div>`;
+    v.innerHTML = h;
+    bindStatsEvents(v, intervallo, st, fornitoreSelezionato);
+    return;
+  }
+
+  // 1. Quadro Fornitori
+  if (!fornitoreSelezionato) {
+    h += `<div class="card">
+      <h2>&#128666; Quadro Fornitori (${st.fornitori.length})</h2>
+      <p class="muted" style="margin-bottom:.8rem">Totale pagato, quantità di merce ritirata e quota percentuale sul totale:</p>`;
+
+    st.fornitori.forEach(f => {
+      h += `<div class="stat-item">
+        <div class="stat-item-header">
+          <span>${esc(f.nome)}</span>
+          <span style="color:var(--primary-dark)">${fmtEur(f.speso)} <span style="font-size:.8rem;color:var(--muted)">(${f.percSpeso}%)</span></span>
+        </div>
+        <div class="stat-bar-bg"><div class="stat-bar-fill" style="width:${f.percSpeso}%"></div></div>
+        <div class="stat-item-sub">
+          <span>${fmtKg(f.kg)} kg (${f.percKg}% peso) · ${f.colli} colli · ${f.ritiriCount} ritiri</span>
+          <span>Medio: ${fmtEur(f.prezzoMedio)}/kg</span>
+        </div>
+        ${f.listaMerci.length ? `
+          <div style="margin-top:.45rem;padding-top:.4rem;border-top:1px dashed #e5e5e5;font-size:.78rem;color:var(--muted)">
+            <b>Merci fornite:</b> ${f.listaMerci.map(m => `${esc(m.nome)}: ${fmtKg(m.kg)} kg (${fmtEur(m.speso)})`).join(' · ')}
+          </div>
+        ` : ''}
+      </div>`;
+    });
+    h += `</div>`;
+  } else {
+    // Singolo fornitore selezionato
+    const fData = st.fornitori[0];
+    h += `<div class="card">
+      <h2>&#128666; Dettaglio Fornitore: ${esc(fornitoreSelezionato.nome)}</h2>
+      <div style="background:var(--bg);padding:.7rem;border-radius:8px;margin-bottom:.8rem;font-size:.85rem">
+        <b>Incidenza su spesa globale periodo:</b> ${fData ? fData.percSuPeriodoTotale : 0}% (${fmtEur(st.totSpeso)} su ${fmtEur(st.periodoSpeso)})<br>
+        <b>Incidenza su peso globale periodo:</b> ${st.periodoKg > 0 ? round2((st.totKg / st.periodoKg) * 100) : 0}% (${fmtKg(st.totKg)} kg su ${fmtKg(st.periodoKg)} kg)
+      </div>
+    </div>`;
+  }
+
+  // 2. Quadro Merci / Formaggi
+  h += `<div class="card">
+    <h2>&#129472; ${fornitoreSelezionato ? 'Merci ritirate dal fornitore' : 'Ripartizione per Tipo di Merce'} (${st.merci.length})</h2>
+    <p class="muted" style="margin-bottom:.8rem">Quantità ritirata per tipo di formaggio e incidenza sul totale:</p>`;
+
+  st.merci.forEach(m => {
+    h += `<div class="stat-item">
+      <div class="stat-item-header">
+        <span>${esc(m.nome)}</span>
+        <span style="color:var(--primary-dark)">${fmtKg(m.kg)} kg <span style="font-size:.8rem;color:var(--muted)">(${m.percKg}%)</span></span>
+      </div>
+      <div class="stat-bar-bg"><div class="stat-bar-fill" style="width:${m.percKg}%;background:#2f855a"></div></div>
+      <div class="stat-item-sub">
+        <span>${fmtEur(m.speso)} (${m.percSpeso}% spesa) · ${m.colli} colli</span>
+        <span>Medio: ${fmtEur(m.prezzoMedio)}/kg</span>
+      </div>
+    </div>`;
+  });
+  h += `</div>`;
+
+  // 3. Andamento Mensile (se > 1 mese)
+  if (st.mesi.length > 1) {
+    h += `<div class="card">
+      <h2>&#128197; Andamento Mensile</h2>
+      <table class="table" style="margin-top:.5rem">
+        <thead>
+          <tr>
+            <th>Mese</th>
+            <th style="text-align:right">Ritiri</th>
+            <th style="text-align:right">Colli</th>
+            <th style="text-align:right">Kg</th>
+            <th style="text-align:right">Spesa</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${st.mesi.map(m => `
+            <tr>
+              <td><b>${esc(fmtMeseAnno(m.ym))}</b></td>
+              <td style="text-align:right">${m.ritiriCount}</td>
+              <td style="text-align:right">${m.colli}</td>
+              <td style="text-align:right">${fmtKg(m.kg)}</td>
+              <td style="text-align:right"><b>${fmtEur(m.speso)}</b></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  }
+
+  // Azioni PDF
+  h += `<div class="card">
+    <h2>&#128196; Esporta Report</h2>
+    <p class="muted">Scarica o condividi il prospetto completo riassuntivo in formato PDF (tabella fornitori, merci e medie ponderate).</p>
+    <div class="btn-row" style="margin-top:.8rem">
+      <button class="btn primary" id="btnScaricaReport">&#11015; Scarica PDF</button>
+      <button class="btn" id="btnCondividiReport">&#128228; Condividi</button>
+      <button class="btn" id="btnAnteprimaReport">&#128065; Anteprima</button>
+    </div>
+  </div>`;
+
+  v.innerHTML = h;
+  bindStatsEvents(v, intervallo, st, fornitoreSelezionato);
+}
+
+function bindStatsEvents(v, intervallo, st, fornitoreSelezionato) {
+  $('#selPeriodoStats')?.addEventListener('change', e => {
+    statsState.periodo = e.target.value;
+    if (statsState.periodo === 'custom') {
+      const d = new Date();
+      statsState.dal = `${d.getFullYear()}-01-01`;
+      statsState.al = today();
+    }
+    render();
+  });
+
+  $('#selFornitoreStats')?.addEventListener('change', e => {
+    statsState.fornitoreId = e.target.value;
+    render();
+  });
+
+  $('#inpDalStats')?.addEventListener('change', e => {
+    statsState.dal = e.target.value;
+    render();
+  });
+
+  $('#inpAlStats')?.addEventListener('change', e => {
+    statsState.al = e.target.value;
+    render();
+  });
+
+  $('#btnScaricaReport')?.addEventListener('click', () => {
+    const { doc, nome } = creaPdfReport(intervallo, st, fornitoreSelezionato);
+    doc.save(nome);
+  });
+
+  $('#btnCondividiReport')?.addEventListener('click', async () => {
+    const { doc, nome } = creaPdfReport(intervallo, st, fornitoreSelezionato);
+    const ok = await condividiFile(doc.output('blob'), nome, 'application/pdf');
+    if (ok === true) toast('Report condiviso');
+  });
+
+  $('#btnAnteprimaReport')?.addEventListener('click', () => {
+    const { doc } = creaPdfReport(intervallo, st, fornitoreSelezionato);
+    window.open(doc.output('bloburl'), '_blank');
+  });
 }
 
 /* ---------------- Vista: merci ---------------- */
@@ -2137,6 +2554,167 @@ function creaPdfGenerale(g) {
 
   const data = g.chiusa ? g.saldo.data : today();
   const nome = `FatturaGenerale_${g.anno}-G${String(g.numero).padStart(3, '0')}_${nomeFilePulito(f.nome)}_${g.chiusa ? 'saldata_' : 'aperta_'}${data}.pdf`;
+  return { doc, nome };
+}
+
+function pdfIntestazioneReport(doc, titolo, righeDx, fornitore) {
+  const { M, W, ORO } = PDF;
+  const A = S.azienda;
+  let y = 18;
+  if (A.ragioneSociale) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
+    doc.text(pdfTxt(A.ragioneSociale), M, y, { maxWidth: 100 });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+    y += 6;
+    const aLines = [...(A.indirizzo || '').split('\n'), A.piva && 'P.IVA ' + A.piva, A.cf && 'C.F. ' + A.cf,
+      A.telefono && 'Tel. ' + A.telefono, A.email].filter(Boolean);
+    aLines.forEach(l => { doc.text(pdfTxt(l), M, y); y += 4.2; });
+  }
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(...ORO);
+  doc.text(titolo, W - M, 18, { align: 'right' });
+  doc.setTextColor(0); doc.setFontSize(9.5); doc.setFont('helvetica', 'normal');
+  righeDx.forEach((t, i) => doc.text(pdfTxt(t), W - M, 25 + i * 5, { align: 'right' }));
+
+  y = Math.max(y, 25 + righeDx.length * 5) + 6;
+  if (fornitore) {
+    const fLines = [...(fornitore.indirizzo || '').split('\n'), fornitore.piva && 'P.IVA ' + fornitore.piva,
+      fornitore.telefono && 'Tel. ' + fornitore.telefono, fornitore.email].filter(Boolean);
+    const boxH = 13 + fLines.length * 4.2;
+    doc.setDrawColor(210); doc.roundedRect(110, y, W - M - 110, boxH, 2, 2);
+    doc.setFontSize(8); doc.setTextColor(120); doc.text('FORNITORE FILTRATO', 114, y + 5);
+    doc.setTextColor(0); doc.setFont('helvetica', 'bold'); doc.setFontSize(10);
+    doc.text(pdfTxt(fornitore.nome), 114, y + 10, { maxWidth: W - M - 118 });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+    fLines.forEach((l, i) => doc.text(pdfTxt(l), 114, y + 14.5 + i * 4.2));
+    y += boxH + 6;
+  }
+  return y;
+}
+
+function creaPdfReport(intervallo, st, fornitoreSelezionato) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const { M, W, ORO, CREMA } = PDF;
+
+  const righeDx = [
+    `Periodo: ${pdfTxt(intervallo.etichetta)}`,
+    `Generato il: ${fmtDate(today())} ${nowTime()}`
+  ];
+  if (fornitoreSelezionato) {
+    righeDx.unshift(`Fornitore: ${pdfTxt(fornitoreSelezionato.nome)}`);
+  }
+
+  let y = pdfIntestazioneReport(doc, 'REPORT STATISTICO', righeDx, fornitoreSelezionato);
+
+  const titoletto = (t, posY) => {
+    if (posY > 255) { doc.addPage(); posY = 20; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11.5); doc.text(pdfTxt(t), M, posY);
+    doc.setFont('helvetica', 'normal');
+    return posY + 3;
+  };
+
+  // 1. Sintesi KPI
+  y = titoletto('Sintesi del periodo', y);
+  doc.autoTable({
+    startY: y,
+    margin: { left: M, right: M },
+    theme: 'grid',
+    styles: { fontSize: 9.5, cellPadding: 2.8, halign: 'center' },
+    headStyles: { fillColor: ORO, textColor: 255, halign: 'center' },
+    head: [['Totale Spesa', 'Totale Merce', 'Colli Pesati', 'Prezzo Medio']],
+    body: [[
+      eurPdf(st.totSpeso),
+      fmtKg(st.totKg) + ' kg',
+      String(st.totColli) + ` (${st.ritiriCount} ritiri)`,
+      eurPdf(st.prezzoMedioGenerale) + ' /kg'
+    ]]
+  });
+  y = doc.lastAutoTable.finalY + 8;
+
+  // 2. Quadro Fornitori (se non filtrato per singolo fornitore)
+  if (!fornitoreSelezionato && st.fornitori.length) {
+    y = titoletto('Quadro per Fornitore', y);
+    doc.autoTable({
+      startY: y,
+      margin: { left: M, right: M },
+      theme: 'grid',
+      styles: { fontSize: 8.5, cellPadding: 2 },
+      headStyles: { fillColor: ORO, textColor: 255 },
+      footStyles: { fillColor: CREMA, textColor: 0, fontStyle: 'bold' },
+      head: [['Fornitore', 'Ritiri', 'Colli', 'Peso (kg)', '% Peso', 'Prezzo Med.', 'Totale Speso', '% Spesa']],
+      body: st.fornitori.map(f => [
+        pdfTxt(f.nome),
+        String(f.ritiriCount),
+        String(f.colli),
+        fmtKg(f.kg),
+        f.percKg + '%',
+        eurPdf(f.prezzoMedio) + '/kg',
+        eurPdf(f.speso),
+        f.percSpeso + '%'
+      ]),
+      foot: [['Totale Fornitori', String(st.ritiriCount), String(st.totColli), fmtKg(st.totKg), '100%', eurPdf(st.prezzoMedioGenerale) + '/kg', eurPdf(st.totSpeso), '100%']],
+      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right' }, 7: { halign: 'right' } },
+      didParseCell: d => { if (d.section !== 'body' && d.column.index > 0) d.cell.styles.halign = 'right'; }
+    });
+    y = doc.lastAutoTable.finalY + 8;
+  }
+
+  // 3. Quadro Merci / Formaggi
+  if (st.merci.length) {
+    y = titoletto(fornitoreSelezionato ? `Merci ritirate da ${fornitoreSelezionato.nome}` : 'Ripartizione per Tipo di Merce / Formaggio', y);
+    doc.autoTable({
+      startY: y,
+      margin: { left: M, right: M },
+      theme: 'grid',
+      styles: { fontSize: 8.5, cellPadding: 2 },
+      headStyles: { fillColor: ORO, textColor: 255 },
+      footStyles: { fillColor: CREMA, textColor: 0, fontStyle: 'bold' },
+      head: [['Merce / Formaggio', 'Colli', 'Peso (kg)', '% Peso', 'Prezzo Med.', 'Totale Speso', '% Spesa']],
+      body: st.merci.map(m => [
+        pdfTxt(m.nome),
+        String(m.colli),
+        fmtKg(m.kg),
+        m.percKg + '%',
+        eurPdf(m.prezzoMedio) + '/kg',
+        eurPdf(m.speso),
+        m.percSpeso + '%'
+      ]),
+      foot: [['Totale Merci', String(st.totColli), fmtKg(st.totKg), '100%', eurPdf(st.prezzoMedioGenerale) + '/kg', eurPdf(st.totSpeso), '100%']],
+      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right' } },
+      didParseCell: d => { if (d.section !== 'body' && d.column.index > 0) d.cell.styles.halign = 'right'; }
+    });
+    y = doc.lastAutoTable.finalY + 8;
+  }
+
+  // 4. Andamento Mensile (se più di 1 mese)
+  if (st.mesi.length > 1) {
+    y = titoletto('Andamento Mensile', y);
+    doc.autoTable({
+      startY: y,
+      margin: { left: M, right: M },
+      theme: 'grid',
+      styles: { fontSize: 8.5, cellPadding: 2 },
+      headStyles: { fillColor: ORO, textColor: 255 },
+      head: [['Mese', 'Ritiri', 'Colli', 'Peso (kg)', 'Prezzo Med.', 'Totale Speso']],
+      body: st.mesi.map(m => [
+        fmtMeseAnno(m.ym),
+        String(m.ritiriCount),
+        String(m.colli),
+        fmtKg(m.kg),
+        eurPdf(m.prezzoMedio) + '/kg',
+        eurPdf(m.speso)
+      ]),
+      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' } },
+      didParseCell: d => { if (d.section !== 'body' && d.column.index > 0) d.cell.styles.halign = 'right'; }
+    });
+    y = doc.lastAutoTable.finalY + 8;
+  }
+
+  pdfPiePagina(doc, 'Report statistico Fatti Conti');
+
+  const fnForn = fornitoreSelezionato ? `_${nomeFilePulito(fornitoreSelezionato.nome)}` : '';
+  const nome = `Report_Statistiche${fnForn}_${intervallo.dal}_al_${intervallo.al}.pdf`;
   return { doc, nome };
 }
 

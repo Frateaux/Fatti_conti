@@ -30,21 +30,30 @@ Per i fornitori che vengono saldati periodicamente o a scaglioni diversi:
   - Sulla fattura generale e su ciascuna pro forma viene registrato il riferimento al saldo.
   - Eventuali altre fatture generali dello stesso fornitore rimangono indipendenti e aperte fino al loro rispettivo saldo.
 
-### 4. Sincronizzazione Cloud (Supabase, 100% gratuita e privata)
+### 4. Report & Statistiche (Quadro Fornitori e Merci)
+Analisi immediata e completa delle movimentazioni commerciali:
+- **Filtri periodo flessibili**: Questo mese, Mese scorso, Anno in corso, Tutto lo storico o intervallo personalizzato con date Dal/Al.
+- **KPI principali**: Totale speso (€), totale merce ritirata (kg), colli pesati e numero di ritiri, prezzo medio ponderato al kg (€/kg).
+- **Quadro per Fornitore**: totale pagato ad ogni fornitore, quantità ritirata, **percentuale di spesa e peso sul totale** con barre grafiche e riepilogo dei formaggi forniti. Filtro opzionale per singolo fornitore con incidenza sul fatturato del periodo.
+- **Quadro per Tipo di Merce**: quantità ritirata per ogni tipologia di formaggio, **percentuale sul peso e sulla spesa totale**, colli e prezzo medio di acquisto.
+- **Andamento mensile**: tabella riassuntiva dei ritiri mese per mese quando il periodo selezionato copre più mesi.
+- **Esportazione PDF e Condivisione**: download con un tocco o condivisione immediata del report tabellare professionale in formato PDF.
+
+### 5. Sincronizzazione Cloud (Supabase, 100% gratuita e privata)
 - **Tempo reale tra PC e Smartphone**: ogni dato inserito sul telefono compare automaticamente sul computer (e viceversa).
 - **Crittografia e sicurezza RLS (Row Level Security)**: i dati sono protetti e accessibili solo ed esclusivamente dopo il login con la tua email e password. Nessuno su GitHub può visualizzarli.
 - **Funzionamento offline preservato**: se non c'è connessione (es. in stalla o magazzino), l'app salva tutto localmente e sincronizza in background non appena il segnale ritorna.
 
-### 5. Protezione & Blocco App (Impronta, Viso o PIN)
+### 6. Protezione & Blocco App (Impronta, Viso o PIN)
 - **WebAuthn**: possibilità di bloccare l'apertura dell'applicazione con sensore biometrico (**Face ID**, **Impronta digitale** o **Windows Hello**).
 - **PIN o Password di riserva**: per sbloccare l'app anche sui dispositivi sprovvisti di sensore biometrico.
 
-### 6. Salvataggio su Google Drive
+### 7. Salvataggio su Google Drive
 - Pulsante diretto **Salva PDF su Google Drive**: archivia i documenti nella cartella dedicata (con sottocartelle ordinate per fornitore).
 - Possibilità di salvare in un colpo solo sia la fattura generale che tutte le singole pro forma incluse.
 - Tasto di condivisione classica del telefono (WhatsApp, Drive, Email, Stampa) sempre disponibile come alternativa.
 
-### 7. Utilizzo Offline (PWA)
+### 8. Utilizzo Offline (PWA)
 - L'app salva tutti i file necessari nella memoria del dispositivo.
 - Si apre e funziona regolarmente anche in stalla o in magazzino senza segnale.
 - I dati inseriti restano memorizzati sul telefono e, appena torna la linea, i PDF possono essere inviati a Google Drive e il cloud si aggiorna da solo.
