@@ -697,7 +697,8 @@ function viewRitiri(v) {
           <div class="title">${esc(fornitoreDi(r).nome)}
             ${gs ? `<span class="badge closed">&#128274; saldata</span>`
               : `<span class="badge ${r.chiuso ? 'closed' : 'open'}">${r.chiuso ? 'chiuso' : 'aperto'}</span>`}
-            ${r.pdfSalvato ? '<span class="badge">PDF</span>' : ''}</div>
+            ${r.driveFileId || r.driveLink ? '<span class="badge" style="background:#e3f4ea;color:#1e6340;border:1px solid #a3d9b8">&#9729; Su Drive</span>'
+              : (r.pdfSalvato ? '<span class="badge">PDF</span>' : '')}</div>
           <div class="sub">N. ${r.numero}/${r.anno} · ${fmtDate(r.data)} · ${c.colli} colli · ${fmtKg(c.kg)} kg</div>
         </div>
         <div class="right">${fmtEur(c.totale)}</div>
@@ -848,10 +849,23 @@ function viewRitiro(v, r) {
     <textarea id="note" ${r.chiuso ? 'disabled' : ''} placeholder="Facoltative">${esc(r.note)}</textarea></div>`;
 
   // Azioni
+  const giaSuDrive = !!(r.driveFileId || r.driveLink);
   h += `<div class="card">
-    <button class="btn primary block" id="drive">&#9729; Salva PDF su Google Drive</button>
-    ${r.driveLink ? `<p class="muted" style="text-align:center">Su Drive dal ${new Date(r.pdfSalvato).toLocaleString('it-IT')} · <a href="${esc(r.driveLink)}" target="_blank" rel="noopener">Apri su Drive</a></p>` : ''}
-    <div class="btn-row">
+    ${giaSuDrive ? `
+      <div style="background:#e3f4ea;border:1px solid #a3d9b8;border-radius:8px;padding:.7rem .85rem;color:#1e6340;margin-bottom:.8rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.4rem">
+          <div>
+            <b>&#9989; Già salvato su Google Drive</b><br>
+            <small style="color:#2f855a">${r.pdfSalvato ? 'Ultima copia: ' + new Date(r.pdfSalvato).toLocaleString('it-IT') : 'Presente su Drive'}</small>
+          </div>
+          ${r.driveLink ? `<a href="${esc(r.driveLink)}" target="_blank" rel="noopener" class="btn small" style="background:#fff;color:#1e6340;border:1px solid #a3d9b8;text-decoration:none">&#128065; Apri file</a>` : ''}
+        </div>
+      </div>
+      <button class="btn block" id="drive">&#9729; Aggiorna copia su Google Drive</button>
+    ` : `
+      <button class="btn primary block" id="drive">&#9729; Salva PDF su Google Drive</button>
+    `}
+    <div class="btn-row" style="margin-top:.6rem">
       <button class="btn" id="pdfShare">&#128228; Condividi</button>
       <button class="btn" id="pdfDown">&#11015; Scarica</button>
       <button class="btn" id="pdfView">&#128065; Anteprima</button>
@@ -1040,7 +1054,8 @@ function viewConti(v) {
       totRes += c.residuo;
       return `<div class="list-item" data-g="${g.id}">
         <div class="main">
-          <div class="title">${esc(fornitoreDi(g).nome)} <span class="badge open">aperta</span></div>
+          <div class="title">${esc(fornitoreDi(g).nome)} <span class="badge open">aperta</span>
+            ${g.driveFileId || g.driveLink ? '<span class="badge" style="background:#e3f4ea;color:#1e6340;border:1px solid #a3d9b8">&#9729; Su Drive</span>' : ''}</div>
           <div class="sub">n. ${numGen(g)} · ${c.ritiri.length} pro forma · merce ${fmtEur(c.totale)} · acconti ${fmtEur(c.totAcconti)}</div>
         </div>
         <div class="right"><div class="muted" style="font-weight:400;font-size:.75rem">da pagare</div>${fmtEur(c.residuo)}</div>
@@ -1061,7 +1076,8 @@ function viewConti(v) {
     const c = calcolaGenerale(g);
     return `<div class="list-item" data-g="${g.id}">
       <div class="main">
-        <div class="title">${esc(fornitoreDi(g).nome)} <span class="badge closed">&#128274; saldata</span></div>
+        <div class="title">${esc(fornitoreDi(g).nome)} <span class="badge closed">&#128274; saldata</span>
+          ${g.driveFileId || g.driveLink ? '<span class="badge" style="background:#e3f4ea;color:#1e6340;border:1px solid #a3d9b8">&#9729; Su Drive</span>' : ''}</div>
         <div class="sub">n. ${numGen(g)} del ${fmtDate(g.saldo.data)} · ${c.ritiri.length} pro forma</div>
       </div>
       <div class="right">${fmtEur(c.totale)}</div>
@@ -1142,7 +1158,8 @@ function viewGenerale(v, g) {
   h += c.ritiri.map(({ r, c: rc }) => `<div class="list-item" style="padding:.6rem .8rem;align-items:center">
       <div class="main" data-r="${r.id}" style="cursor:pointer">
         <div class="title">N. ${r.numero}/${r.anno} · ${fmtDate(r.data)}
-          ${g.chiusa ? '' : `<span class="badge ${r.chiuso ? 'closed' : 'open'}">${r.chiuso ? 'chiusa' : 'in corso'}</span>`}</div>
+          ${g.chiusa ? '' : `<span class="badge ${r.chiuso ? 'closed' : 'open'}">${r.chiuso ? 'chiusa' : 'in corso'}</span>`}
+          ${r.driveFileId || r.driveLink ? '<span class="badge" style="background:#e3f4ea;color:#1e6340;border:1px solid #a3d9b8;font-size:.7rem">&#9729; Su Drive</span>' : ''}</div>
         <div class="sub">${rc.colli} colli · ${fmtKg(rc.kg)} kg</div>
       </div>
       <div class="right" style="text-align:right">
@@ -1185,10 +1202,23 @@ function viewGenerale(v, g) {
   }
 
   // Azioni
+  const gSuDrive = !!(g.driveFileId || g.driveLink);
   h += `<div class="card">
-    <button class="btn primary block" id="gDrive">&#9729; Salva PDF su Google Drive</button>
-    ${g.driveLink ? `<p class="muted" style="text-align:center"><a href="${esc(g.driveLink)}" target="_blank" rel="noopener">Apri su Drive</a></p>` : ''}
-    <div class="btn-row">
+    ${gSuDrive ? `
+      <div style="background:#e3f4ea;border:1px solid #a3d9b8;border-radius:8px;padding:.7rem .85rem;color:#1e6340;margin-bottom:.8rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.4rem">
+          <div>
+            <b>&#9989; Già salvato su Google Drive</b><br>
+            <small style="color:#2f855a">${g.pdfSalvato ? 'Ultima copia: ' + new Date(g.pdfSalvato).toLocaleString('it-IT') : 'Presente su Drive'}</small>
+          </div>
+          ${g.driveLink ? `<a href="${esc(g.driveLink)}" target="_blank" rel="noopener" class="btn small" style="background:#fff;color:#1e6340;border:1px solid #a3d9b8;text-decoration:none">&#128065; Apri file</a>` : ''}
+        </div>
+      </div>
+      <button class="btn block" id="gDrive">&#9729; Aggiorna copia su Google Drive</button>
+    ` : `
+      <button class="btn primary block" id="gDrive">&#9729; Salva PDF su Google Drive</button>
+    `}
+    <div class="btn-row" style="margin-top:.6rem">
       <button class="btn" id="gShare">&#128228; Condividi</button>
       <button class="btn" id="gDown">&#11015; Scarica</button>
       <button class="btn" id="gView">&#128065; Anteprima</button>
@@ -2817,6 +2847,16 @@ async function caricaPdfSuDrive(obj, creaFn, parent) {
       if (!f.trashed && f.parents?.includes(parent)) esistente = f.id;
     } catch (e) { if (e.status !== 404) throw e; }
   }
+  // Se non abbiamo l'ID o non è stato trovato, cerca su Drive se esiste già un file con lo stesso nome nella cartella
+  if (!esistente) {
+    try {
+      const q = `name='${qEsc(nome)}' and '${parent}' in parents and trashed=false`;
+      const j = await driveFetch(`${DRIVE_API}?fields=files(id,webViewLink)&q=${encodeURIComponent(q)}`);
+      if (j.files?.length) {
+        esistente = j.files[0].id;
+      }
+    } catch (e) { console.warn('Controllo duplicati Drive:', e); }
+  }
   const res = await caricaFile(doc.output('blob'), nome, parent, esistente);
   obj.driveFileId = res.id;
   obj.driveLink = res.webViewLink;
@@ -2847,7 +2887,7 @@ async function salvaSuDrive(obj, creaFn = () => creaPdf(obj), btn = $('#drive'))
   try {
     const parent = await cartellaDestinazione(obj);
     const esistente = await caricaPdfSuDrive(obj, creaFn, parent);
-    toast(esistente ? 'PDF aggiornato su Google Drive ✔' : 'PDF salvato su Google Drive ✔');
+    toast(esistente ? 'Copia esistente aggiornata su Drive (nessun duplicato) ✔' : 'PDF salvato su Google Drive ✔');
   } catch (e) {
     console.error(e);
     alert(e.message);
