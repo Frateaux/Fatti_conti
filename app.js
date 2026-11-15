@@ -125,9 +125,9 @@ function rimuoviSeVuota(g) {
 function calcolaGenerale(g) {
   const ritiri = ritiriDi(g).map(r => ({ r, c: calcola(r) }));
   const perMerce = new Map();
-  let totale = 0, colli = 0, kg = 0;
+  let totale = 0, colli = 0, kg = 0, iva = 0;
   for (const { c } of ritiri) {
-    totale += c.totale; colli += c.colli; kg += c.kg;
+    totale += c.totale; colli += c.colli; kg += c.kg; iva += c.iva;
     for (const riga of c.righe) {
       const k = riga.nome + '|' + riga.prezzo;
       const m = perMerce.get(k) || { nome: riga.nome, prezzo: riga.prezzo, colli: 0, kg: 0 };
@@ -140,8 +140,10 @@ function calcolaGenerale(g) {
   const acconti = [...g.acconti].sort((a, b) => a.data.localeCompare(b.data));
   const totAcconti = round2(acconti.reduce((s, a) => s + a.importo, 0));
   totale = round2(totale);
+  iva = round2(iva);
+  const imponibile = round2(totale - iva);
   const saldo = g.saldo ? round2(g.saldo.importo) : 0;
-  return { ritiri, merci, acconti, totale, colli, kg: round3(kg), totAcconti, saldo, residuo: round2(totale - totAcconti - saldo) };
+  return { ritiri, merci, acconti, imponibile, iva, totale, colli, kg: round3(kg), totAcconti, saldo, residuo: round2(totale - totAcconti - saldo) };
 }
 
 /** Collega alla generale aperta tutte le pro forma che non ne hanno una (dati vecchi / import) */
@@ -172,14 +174,17 @@ function calcola(r) {
     riga.kg += p.peso;
   }
   const righe = [...map.values()];
-  let totale = 0, kg = 0;
+  let imponibile = 0, kg = 0;
   for (const riga of righe) {
     riga.kg = round3(riga.kg);
     riga.importo = round2(riga.kg * riga.prezzo);
-    totale += riga.importo;
+    imponibile += riga.importo;
     kg += riga.kg;
   }
-  return { righe, totale: round2(totale), kg: round3(kg), colli: r.pesate.length };
+  imponibile = round2(imponibile);
+  const iva = round2(Number(r.iva) || 0);
+  const totale = round2(imponibile + iva);
+  return { righe, imponibile, iva, totale, kg: round3(kg), colli: r.pesate.length };
 }
 
 /* ---------------- UI helpers ---------------- */
@@ -684,8 +689,12 @@ function viewRitiri(v) {
       ${S.fornitori.map(f => `<option value="${f.id}" ${f.id === nav.filtroForn ? 'selected' : ''}>${esc(f.nome)}</option>`).join('')}
     </select>`;
   }
+  h += `<div style="margin-bottom:.75rem">
+    <button class="btn block" id="btnImportaFattura">&#128229; Importa Fattura (PDF / XML)</button>
+    <input type="file" id="inpImportFattura" accept=".pdf,.xml,.p7m,application/pdf,text/xml,application/xml" multiple class="hidden">
+  </div>`;
   if (!list.length) {
-    h += `<div class="empty">Nessun ritiro.<br>Tocca <b>+</b> per iniziare a pesare.</div>`;
+    h += `<div class="empty">Nessun ritiro.<br>Tocca <b>+</b> per iniziare a pesare oppure importa una fattura PDF/XML.</div>`;
   } else {
     let totLista = 0;
     h += list.map(r => {
@@ -710,6 +719,11 @@ function viewRitiri(v) {
   v.innerHTML = h;
 
   $('#filtro')?.addEventListener('change', e => { nav.filtroForn = e.target.value; render(); });
+  $('#btnImportaFattura')?.addEventListener('click', () => $('#inpImportFattura').click());
+  $('#inpImportFattura')?.addEventListener('change', e => {
+    if (e.target.files?.length) importaFileFatture([...e.target.files]);
+    e.target.value = '';
+  });
   $$('.list-item', v).forEach(el => el.addEventListener('click', () => apriRitiro(el.dataset.id)));
   $('#nuovo').addEventListener('click', nuovoRitiro);
 }
@@ -836,8 +850,15 @@ function viewRitiro(v, r) {
           <td>${fmtEur(riga.importo)}</td>
         </tr>`).join('')}
       </tbody>
-      <tfoot><tr><td>Totale</td><td>${c.colli}</td><td>${fmtKg(c.kg)}</td><td></td><td></td></tr></tfoot>
+      <tfoot><tr><td>Totale</td><td>${c.colli}</td><td>${fmtKg(c.kg)}</td><td></td><td>${c.iva > 0 ? fmtEur(c.imponibile) : ''}</td></tr></tfoot>
     </table>
+    ${c.iva > 0 || !r.chiuso ? `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:.5rem;padding-top:.4rem;border-top:1px dashed var(--border);font-size:.9rem">
+        <span class="muted">IVA (€)</span>
+        ${r.chiuso ? `<span>${fmtEur(c.iva)}</span>`
+          : `<input class="price-input" id="inpIvaRitiro" inputmode="decimal" value="${(Number(r.iva) || 0).toLocaleString('it-IT', { minimumFractionDigits: 2 })}">`}
+      </div>
+    ` : ''}
     <div class="total-big" style="margin-top:.5rem">${fmtEur(c.totale)}</div>`;
   } else {
     h += `<div class="muted">Il riepilogo apparirà dopo la prima pesata.</div>`;
@@ -936,6 +957,13 @@ function viewRitiro(v, r) {
     }
     save(); render();
   }));
+
+  $('#inpIvaRitiro')?.addEventListener('change', e => {
+    const val = parseNum(e.target.value);
+    if (!(val >= 0)) { toast('Importo IVA non valido'); return render(); }
+    r.iva = round2(val);
+    save(); render();
+  });
 
   $('#note').addEventListener('change', e => { r.note = e.target.value; save(); });
 
@@ -1125,7 +1153,11 @@ function viewGenerale(v, g) {
   // Situazione
   h += `<div class="card"><h3>Situazione${g.chiusa ? '' : ' al ' + fmtDate(today())}</h3>
     <table class="summary">
-      <tr><td>Totale merce (${c.ritiri.length} pro forma, ${fmtKg(c.kg)} kg)</td><td>${fmtEur(c.totale)}</td></tr>
+      ${c.iva > 0
+        ? `<tr><td>Imponibile merce (${c.ritiri.length} pro forma, ${fmtKg(c.kg)} kg)</td><td>${fmtEur(c.imponibile)}</td></tr>
+           <tr><td>IVA</td><td>${fmtEur(c.iva)}</td></tr>
+           <tr><td><b>Totale fattura</b></td><td><b>${fmtEur(c.totale)}</b></td></tr>`
+        : `<tr><td>Totale merce (${c.ritiri.length} pro forma, ${fmtKg(c.kg)} kg)</td><td>${fmtEur(c.totale)}</td></tr>`}
       <tr><td>Acconti versati (${c.acconti.length})</td><td>&minus; ${fmtEur(c.totAcconti)}</td></tr>
       ${g.chiusa ? `<tr><td>Saldo versato il ${fmtDate(g.saldo.data)}</td><td>&minus; ${fmtEur(c.saldo)}</td></tr>` : ''}
     </table>
@@ -2391,7 +2423,7 @@ function creaPdf(r) {
     margin: { left: M, right: M },
     head: [['Merce', 'Colli', 'Peso totale (kg)', 'Prezzo (€/kg)', 'Importo']],
     body: c.righe.map(riga => [pdfTxt(riga.nome), riga.pesate.length, fmtKg(riga.kg), eurPdf(riga.prezzo), eurPdf(riga.importo)]),
-    foot: [['Totale', c.colli, fmtKg(c.kg), '', eurPdf(c.totale)]],
+    foot: [['Totale', c.colli, fmtKg(c.kg), '', eurPdf(c.imponibile)]],
     theme: 'grid',
     styles: { fontSize: 10, cellPadding: 2.5 },
     headStyles: { fillColor: ORO, textColor: 255 },
@@ -2401,11 +2433,16 @@ function creaPdf(r) {
   });
   y = doc.lastAutoTable.finalY + 8;
 
+  if (c.iva > 0) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+    doc.text(`Imponibile: ${eurPdf(c.imponibile)}`, W - M, y, { align: 'right' }); y += 5;
+    doc.text(`IVA: ${eurPdf(c.iva)}`, W - M, y, { align: 'right' }); y += 6;
+  }
   doc.setFont('helvetica', 'bold'); doc.setFontSize(13);
   doc.text(`TOTALE DOCUMENTO: ${eurPdf(c.totale)}`, W - M, y, { align: 'right' });
   y += 6;
   doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(110);
-  doc.text('Importi senza IVA.', W - M, y, { align: 'right' });
+  if (!(c.iva > 0)) doc.text('Importi senza IVA.', W - M, y, { align: 'right' });
   if (g && !g.chiusa) doc.text(`Inclusa nella fattura generale n. ${numGen(g)}.`, M, y);
   doc.setTextColor(0);
   y += 6;
@@ -2517,10 +2554,17 @@ function creaPdfGenerale(g) {
   y = doc.lastAutoTable.finalY + 8;
 
   // Riepilogo finale
-  const righe = [
-    ['Totale merce', eurPdf(c.totale)],
-    ['Acconti versati', '- ' + eurPdf(c.totAcconti)]
-  ];
+  const righe = c.iva > 0
+    ? [
+        ['Imponibile merce', eurPdf(c.imponibile)],
+        ['IVA', eurPdf(c.iva)],
+        ['Totale fattura', eurPdf(c.totale)],
+        ['Acconti versati', '- ' + eurPdf(c.totAcconti)]
+      ]
+    : [
+        ['Totale merce', eurPdf(c.totale)],
+        ['Acconti versati', '- ' + eurPdf(c.totAcconti)]
+      ];
   if (g.chiusa) righe.push([`Saldo versato il ${fmtDate(g.saldo.data)}${g.saldo.note ? ' (' + pdfTxt(g.saldo.note) + ')' : ''}`, '- ' + eurPdf(c.saldo)]);
   righe.push([g.chiusa ? (c.residuo ? 'DIFFERENZA NON PAGATA' : 'RESIDUO') : 'RESIDUO DA PAGARE', eurPdf(c.residuo)]);
   if (y > 240) { doc.addPage(); y = 20; }
@@ -2537,8 +2581,7 @@ function creaPdfGenerale(g) {
   });
   y = doc.lastAutoTable.finalY + 6;
   doc.setFontSize(8); doc.setTextColor(110);
-  doc.text('Importi senza IVA.', M, y);
-  y += 6;
+  if (!(c.iva > 0)) { doc.text('Importi senza IVA.', M, y); y += 6; }
 
   // Dettaglio pesate di tutti i ritiri
   if (c.ritiri.some(({ r }) => r.pesate.length)) {
@@ -2919,9 +2962,501 @@ async function salvaTuttiSuDrive(g, btn) {
   render();
 }
 
+/* ---------------- Importazione Fatture (PDF & XML) ---------------- */
+
+const MP_MAP = {
+  MP01: 'Contanti', MP02: 'Assegno', MP03: 'Assegno circolare', MP04: 'Contanti presso Tesoreria',
+  MP05: 'Bonifico', MP06: 'Vaglia cambiario', MP07: 'Bollettino bancario', MP08: 'Carta di pagamento',
+  MP09: 'RID', MP10: 'RID utenze', MP11: 'RID veloce', MP12: 'RIBA', MP13: 'MAV',
+  MP16: 'Domiciliazione bancaria', MP18: 'Bollettino c/c postale', MP19: 'SEPA Direct Debit',
+  MP20: 'SEPA Direct Debit CORE', MP21: 'SEPA Direct Debit B2B', MP22: 'Trattenuta su somme', MP23: 'PagoPA'
+};
+
+function itDateToIso(s) {
+  const m = String(s || '').match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : '';
+}
+
+function normStr(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+}
+
+function normPiva(s) {
+  return String(s || '').toUpperCase().replace(/^IT/i, '').replace(/[^A-Z0-9]/g, '');
+}
+
+function trovaFornitoreCorrispondente(fInfo) {
+  const targetPiva = normPiva(fInfo.piva);
+  if (targetPiva) {
+    const byPiva = S.fornitori.find(f => normPiva(f.piva) === targetPiva);
+    if (byPiva) return byPiva;
+  }
+  const targetNome = normStr(fInfo.nome);
+  if (targetNome) {
+    const byNome = S.fornitori.find(f => normStr(f.nome) === targetNome);
+    if (byNome) return byNome;
+    const partial = S.fornitori.find(f => normStr(f.nome).includes(targetNome) || targetNome.includes(normStr(f.nome)));
+    if (partial) return partial;
+  }
+  return null;
+}
+
+function trovaMerceCorrispondente(nome) {
+  const target = normStr(nome);
+  if (!target) return null;
+  return S.merci.find(m => normStr(m.nome) === target) || null;
+}
+
+function xmlEls(parent, tagName) {
+  if (!parent) return [];
+  const res = [];
+  const walk = el => {
+    for (const ch of el.children) {
+      if (ch.localName === tagName) res.push(ch);
+      walk(ch);
+    }
+  };
+  walk(parent);
+  return res;
+}
+
+function xmlVal(parent, tagName) {
+  const el = xmlEls(parent, tagName)[0];
+  return el ? el.textContent.trim() : '';
+}
+
+function parseFatturaXml(rawText, fileName) {
+  let xmlText = rawText;
+  // Supporta anche file .xml.p7m estraendo il blocco FatturaElettronica
+  const mXml = rawText.match(/<\?xml[\s\S]*?<\/[a-zA-Z0-9_:]*FatturaElettronica>/i)
+    || rawText.match(/<[a-zA-Z0-9_:]*FatturaElettronica[\s\S]*?<\/[a-zA-Z0-9_:]*FatturaElettronica>/i);
+  if (mXml) xmlText = mXml[0];
+
+  const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+  if (doc.querySelector('parsererror')) throw new Error(`File XML non valido: ${fileName}`);
+
+  const cedente = xmlEls(doc.documentElement, 'CedentePrestatore')[0];
+  const anag = xmlEls(cedente, 'Anagrafica')[0];
+  const nomeForn = xmlVal(anag, 'Denominazione')
+    || [xmlVal(anag, 'Nome'), xmlVal(anag, 'Cognome')].filter(Boolean).join(' ')
+    || 'Fornitore sconosciuto';
+
+  const idPaese = xmlVal(cedente, 'IdPaese');
+  const idCodice = xmlVal(cedente, 'IdCodice');
+  const piva = idCodice ? (idPaese + idCodice) : xmlVal(cedente, 'CodiceFiscale');
+
+  const sede = xmlEls(cedente, 'Sede')[0];
+  const indirizzo = [
+    xmlVal(sede, 'Indirizzo'),
+    [xmlVal(sede, 'CAP'), xmlVal(sede, 'Comune'), xmlVal(sede, 'Provincia') ? `(${xmlVal(sede, 'Provincia')})` : ''].filter(Boolean).join(' ')
+  ].filter(Boolean).join('\n');
+
+  const datiDoc = xmlEls(doc.documentElement, 'DatiGeneraliDocumento')[0];
+  const numero = xmlVal(datiDoc, 'Numero');
+  const data = xmlVal(datiDoc, 'Data').slice(0, 10) || today();
+  const totaleDoc = round2(Number(xmlVal(datiDoc, 'ImportoTotaleDocumento')) || 0);
+
+  const righe = [];
+  const lotti = [];
+  for (const dl of xmlEls(doc.documentElement, 'DettaglioLinee')) {
+    const desc = xmlVal(dl, 'Descrizione');
+    const qta = Number(xmlVal(dl, 'Quantita')) || 0;
+    const prezzo = Number(xmlVal(dl, 'PrezzoUnitario')) || 0;
+    const importo = round2(Number(xmlVal(dl, 'PrezzoTotale')) || 0);
+    if (qta > 0 && (importo > 0 || prezzo > 0)) {
+      righe.push({ nome: desc, kg: round3(qta), prezzo, importo: importo || round2(qta * prezzo) });
+    } else if (/lotto/i.test(desc)) {
+      lotti.push(desc.trim());
+    }
+  }
+
+  let imponibile = 0, iva = 0;
+  for (const dr of xmlEls(doc.documentElement, 'DatiRiepilogo')) {
+    imponibile += Number(xmlVal(dr, 'ImponibileImporto')) || 0;
+    iva += Number(xmlVal(dr, 'Imposta')) || 0;
+  }
+  imponibile = round2(imponibile || righe.reduce((s, x) => s + x.importo, 0));
+  iva = round2(iva);
+  const totale = round2(totaleDoc || (imponibile + iva));
+
+  const detPag = xmlEls(doc.documentElement, 'DettaglioPagamento')[0];
+  const mpCode = xmlVal(detPag, 'ModalitaPagamento');
+  const modalita = MP_MAP[mpCode] || mpCode || '';
+  const dataPagamento = xmlVal(detPag, 'DataScadenzaPagamento').slice(0, 10) || data;
+  const importoPagamento = round2(Number(xmlVal(detPag, 'ImportoPagamento')) || totale);
+
+  return {
+    fileName,
+    fonte: 'XML',
+    numero,
+    data,
+    fornitore: { nome: nomeForn, piva, indirizzo },
+    righe,
+    lotti,
+    imponibile,
+    iva,
+    totale,
+    pagamento: { modalita, data: dataPagamento, importo: importoPagamento }
+  };
+}
+
+async function estraiRighePdf(arrayBuffer) {
+  if (!window.pdfjsLib) throw new Error('Libreria PDF.js non caricata. Ricarica la pagina.');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pagine = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const vp = page.getViewport({ scale: 1 });
+    const tc = await page.getTextContent();
+    const linesMap = [];
+    for (const item of tc.items) {
+      const str = item.str;
+      if (!str || !str.trim()) continue;
+      const x = item.transform[4];
+      const y = item.transform[5];
+      let line = linesMap.find(l => Math.abs(l.y - y) < 3.2);
+      if (!line) {
+        line = { y, items: [] };
+        linesMap.push(line);
+      }
+      line.items.push({ x, str });
+    }
+    linesMap.sort((a, b) => b.y - a.y);
+    linesMap.forEach(l => {
+      l.items.sort((a, b) => a.x - b.x);
+      l.text = l.items.map(i => i.str.trim()).filter(Boolean).join(' ');
+    });
+    pagine.push({ width: vp.width, lines: linesMap });
+  }
+  return pagine;
+}
+
+async function parseFatturaPdf(arrayBuffer, fileName) {
+  const pagine = await estraiRighePdf(arrayBuffer);
+  const tutteRighe = pagine.flatMap(p => p.lines);
+  const fullText = tutteRighe.map(l => l.text).join('\n');
+
+  // Numero e Data fattura
+  let numero = '', data = '';
+  const mNumData = fullText.match(/nr\.?\s*([A-Za-z0-9\/_-]+)\s+del\s+(\d{2}\/\d{2}\/\d{4})/i);
+  if (mNumData) {
+    numero = mNumData[1].trim();
+    data = itDateToIso(mNumData[2]);
+  }
+  if (!data) data = today();
+
+  // Fornitore (colonna sinistra tra FORNITORE e PRODOTTI E SERVIZI)
+  const p1 = pagine[0];
+  let inForn = false;
+  const fornLines = [];
+  for (const l of p1.lines) {
+    const t = l.text;
+    if (/^FORNITORE\b/i.test(t)) { inForn = true; continue; }
+    if (/^PRODOTTI E SERVIZI/i.test(t) || /^METODO DI PAGAMENTO/i.test(t)) break;
+    if (inForn) {
+      const leftText = l.items.filter(i => i.x < p1.width * 0.48).map(i => i.str.trim()).filter(Boolean).join(' ');
+      if (leftText && !/^FORNITORE$/i.test(leftText)) fornLines.push(leftText);
+    }
+  }
+  let nomeForn = '', piva = '', addrLines = [];
+  for (const fl of fornLines) {
+    const mPiva = fl.match(/P\.?\s*IVA\s*:?\s*([A-Z0-9]+)/i);
+    if (mPiva) { piva = mPiva[1].trim(); continue; }
+    if (!nomeForn) nomeForn = fl;
+    else addrLines.push(fl);
+  }
+  if (!nomeForn) nomeForn = 'Fornitore da verificare';
+  const indirizzo = addrLines.join('\n');
+
+  // Prodotti e servizi
+  const righe = [];
+  const lotti = [];
+  let inProd = false;
+  for (const l of tutteRighe) {
+    const t = l.text.replace(/\s+/g, ' ').trim();
+    if (/^PRODOTTI E SERVIZI/i.test(t)) { inProd = true; continue; }
+    if (/^(METODO DI PAGAMENTO|REGIME FISCALE|RIEPILOGO IVA|CALCOLO FATTURA)/i.test(t)) { inProd = false; continue; }
+    if (!inProd) continue;
+    if (/^NR\s+DESCRIZIONE/i.test(t) || /^Cod\.tipo:/i.test(t)) continue;
+
+    // Esempio riga: "1 PROSCIUTTO STAG. LINGOTTO 5,78 KG 11,50 € 66,47 € 10 % -"
+    const mProd = t.match(/^\d+\s+(.+?)\s+(\d[\d.,]*)\s+(?:[A-Z]{1,4}\s+)?(\d[\d.,]*)\s*€\s*(\d[\d.,]*)\s*€/i);
+    if (mProd) {
+      const desc = mProd[1].trim();
+      const qta = parseNum(mProd[2]);
+      const prezzo = parseNum(mProd[3]);
+      const importo = parseNum(mProd[4]);
+      if (qta > 0 && (importo > 0 || prezzo > 0)) {
+        righe.push({ nome: desc, kg: round3(qta), prezzo, importo: round2(importo) });
+      } else if (/lotto/i.test(desc)) {
+        lotti.push(desc);
+      }
+    } else if (/lotto\s*n/i.test(t)) {
+      lotti.push(t.replace(/^\d+\s+/, '').replace(/\s+0,00.*$/, '').trim());
+    }
+  }
+
+  // Imponibile, IVA e Totale documento
+  const trovaImportoDopo = regex => {
+    const m = fullText.match(regex);
+    return m ? round2(parseNum(m[1])) : NaN;
+  };
+  let imponibile = trovaImportoDopo(/Totale imponibile\s+(\d[\d.,]*)\s*€/i);
+  if (Number.isNaN(imponibile)) imponibile = trovaImportoDopo(/Importo prodotti o servizi\s+(\d[\d.,]*)\s*€/i);
+  if (Number.isNaN(imponibile)) imponibile = round2(righe.reduce((s, x) => s + x.importo, 0));
+
+  let iva = trovaImportoDopo(/Totale IVA\s+(\d[\d.,]*)\s*€/i);
+  if (Number.isNaN(iva)) iva = 0;
+
+  let totale = trovaImportoDopo(/Netto a pagare\s+(\d[\d.,]*)\s*€/i);
+  if (Number.isNaN(totale)) totale = trovaImportoDopo(/Totale documento\s+(\d[\d.,]*)\s*€/i);
+  if (Number.isNaN(totale)) totale = round2(imponibile + iva);
+
+  // Metodo di pagamento
+  let modalita = '', dataPagamento = data, importoPagamento = totale;
+  const idxPag = tutteRighe.findIndex(l => /^METODO DI PAGAMENTO/i.test(l.text));
+  if (idxPag >= 0) {
+    const bloccoPag = tutteRighe.slice(idxPag, idxPag + 8).map(l => l.text).join(' ');
+    const mMod = bloccoPag.match(/\b(Assegno(?:\s+circolare)?|Bonifico|Contanti|RIBA|Carta di pagamento|RID|MAV|Rimessa diretta)\b/i);
+    if (mMod) modalita = mMod[1];
+    const mScad = bloccoPag.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d[\d.,]*)\s*€/);
+    if (mScad) {
+      dataPagamento = itDateToIso(mScad[1]) || data;
+      const impPag = parseNum(mScad[2]);
+      if (impPag > 0) importoPagamento = round2(impPag);
+    }
+  }
+
+  return {
+    fileName,
+    fonte: 'PDF',
+    numero,
+    data,
+    fornitore: { nome: nomeForn, piva, indirizzo },
+    righe,
+    lotti,
+    imponibile,
+    iva,
+    totale,
+    pagamento: { modalita, data: dataPagamento, importo: importoPagamento }
+  };
+}
+
+async function importaFileFatture(files) {
+  toast('Lettura fattura in corso…');
+  const fatture = [];
+  const errori = [];
+  for (const file of files) {
+    try {
+      const low = file.name.toLowerCase();
+      if (low.endsWith('.xml') || low.endsWith('.p7m')) {
+        const text = await file.text();
+        fatture.push(parseFatturaXml(text, file.name));
+      } else if (low.endsWith('.pdf')) {
+        const buf = await file.arrayBuffer();
+        fatture.push(await parseFatturaPdf(buf, file.name));
+      } else {
+        errori.push(`${file.name}: formato non supportato (usa PDF o XML).`);
+      }
+    } catch (err) {
+      console.error(err);
+      errori.push(`${file.name}: ${err.message}`);
+    }
+  }
+  if (errori.length && !fatture.length) {
+    return alert('Impossibile leggere i file selezionati:\n\n' + errori.join('\n'));
+  }
+  if (errori.length) {
+    alert('Alcuni file non sono stati letti:\n\n' + errori.join('\n'));
+  }
+  if (fatture.length) mostraAnteprimaImportazione(fatture);
+}
+
+function mostraAnteprimaImportazione(fatture) {
+  const dlg = $('#dialog');
+  const renderForm = () => {
+    let h = `<form method="dialog">
+      <h2>&#128229; Anteprima Importazione (${fatture.length})</h2>
+      <p class="muted" style="margin-bottom:.75rem">Verifica i dati estratti prima di confermare. Ogni fattura verrà registrata e chiusa automaticamente.</p>`;
+
+    fatture.forEach((f, idx) => {
+      const fMatch = trovaFornitoreCorrispondente(f.fornitore);
+      const giaPresente = f.numero && S.ritiri.some(r => (r.note || '').includes(f.numero));
+      const noteDefault = [
+        f.numero ? `Fatt. nr. ${f.numero}` : '',
+        f.lotti?.length ? f.lotti.join(' · ') : ''
+      ].filter(Boolean).join(' · ');
+      const notePagDefault = [
+        f.numero ? `Fatt. ${f.numero}` : '',
+        f.pagamento.modalita
+      ].filter(Boolean).join(' - ');
+
+      h += `<div class="card" style="background:var(--bg);margin-bottom:.8rem;padding:.75rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem">
+          <b>${esc(f.fileName)}</b>
+          <span class="badge">${esc(f.fonte)}</span>
+        </div>
+        ${giaPresente ? `<div style="background:#fff3cd;border:1px solid #ffe69c;color:#8a5a12;padding:.4rem .6rem;border-radius:6px;font-size:.82rem;margin-bottom:.5rem">&#9888; Sembra già presente un ritiro con riferimento <b>${esc(f.numero)}</b>.</div>` : ''}
+
+        <label>Fornitore (trovato: ${esc(f.fornitore.nome)}${f.fornitore.piva ? ' · ' + esc(f.fornitore.piva) : ''})</label>
+        <select name="forn_${idx}" required>
+          <option value="__new__" ${!fMatch ? 'selected' : ''}>+ Crea nuovo: ${esc(f.fornitore.nome)}</option>
+          ${S.fornitori.map(x => `<option value="${x.id}" ${fMatch?.id === x.id ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}
+        </select>
+
+        <div style="display:flex;gap:.5rem;margin-top:.3rem">
+          <div style="flex:1"><label>Data fattura</label><input type="date" name="data_${idx}" value="${esc(f.data)}" required></div>
+          <div style="flex:1"><label>Nr. fattura</label><input name="num_${idx}" value="${esc(f.numero)}"></div>
+        </div>
+
+        <label style="margin-top:.5rem">Prodotti estratti (${f.righe.length})</label>
+        ${f.righe.length ? `
+          <div style="border:1px solid var(--border);border-radius:8px;background:#fff;padding:.4rem .6rem;margin-bottom:.4rem">
+            ${f.righe.map((r, rIdx) => {
+              const mMatch = trovaMerceCorrispondente(r.nome);
+              return `<div style="padding:.35rem 0;${rIdx > 0 ? 'border-top:1px solid #eee;' : ''}font-size:.85rem">
+                <div style="display:flex;justify-content:space-between;gap:.4rem;align-items:center">
+                  <label style="display:flex;align-items:center;gap:.35rem;margin:0;color:var(--text);font-weight:600">
+                    <input type="checkbox" name="use_${idx}_${rIdx}" checked style="width:auto;margin:0">
+                    ${esc(r.nome)}
+                  </label>
+                  <span><b>${fmtKg(r.kg)} kg</b> × ${fmtEur(r.prezzo)} = <b>${fmtEur(r.importo)}</b></span>
+                </div>
+                <select name="merce_${idx}_${rIdx}" style="margin-top:.25rem;font-size:.82rem;padding:.3rem">
+                  <option value="__new__" ${!mMatch ? 'selected' : ''}>+ Nuova merce in listino: ${esc(r.nome)} (${fmtEur(r.prezzo)}/kg)</option>
+                  ${S.merci.map(m => `<option value="${m.id}" ${mMatch?.id === m.id ? 'selected' : ''}>Collega a: ${esc(m.nome)}</option>`).join('')}
+                </select>
+              </div>`;
+            }).join('')}
+          </div>
+        ` : `<p class="muted" style="color:var(--danger)">Nessuna riga prodotto riconosciuta in questo file.</p>`}
+
+        <div style="display:flex;gap:.5rem">
+          <div style="flex:1"><label>Imponibile (€)</label><input name="imp_${idx}" inputmode="decimal" value="${f.imponibile.toLocaleString('it-IT', { minimumFractionDigits: 2 })}" readonly style="background:#eee"></div>
+          <div style="flex:1"><label>IVA (€)</label><input name="iva_${idx}" inputmode="decimal" value="${f.iva.toLocaleString('it-IT', { minimumFractionDigits: 2 })}" required></div>
+          <div style="flex:1"><label>Totale (€)</label><input name="tot_${idx}" inputmode="decimal" value="${f.totale.toLocaleString('it-IT', { minimumFractionDigits: 2 })}" required></div>
+        </div>
+
+        <label>Note ritiro</label>
+        <input name="note_${idx}" value="${esc(noteDefault)}">
+
+        <label style="display:flex;gap:.45rem;align-items:center;margin-top:.6rem;color:var(--text);font-weight:600">
+          <input type="checkbox" name="chiudi_${idx}" checked style="width:auto;margin:0">
+          Chiudi ritiro e registra saldo in Fattura Generale
+        </label>
+        <div style="display:flex;gap:.5rem;margin-top:.2rem">
+          <div style="flex:1"><label>Data saldo</label><input type="date" name="pData_${idx}" value="${esc(f.pagamento.data || f.data)}"></div>
+          <div style="flex:1"><label>Importo saldo (€)</label><input name="pImp_${idx}" inputmode="decimal" value="${f.pagamento.importo.toLocaleString('it-IT', { minimumFractionDigits: 2 })}"></div>
+        </div>
+        <label>Note pagamento</label>
+        <input name="pNote_${idx}" value="${esc(notePagDefault)}">
+      </div>`;
+    });
+
+    h += `<div class="btn-row">
+      <button value="cancel" class="btn" formnovalidate>Annulla</button>
+      <button value="ok" class="btn primary">Importa e Chiudi Fattura</button>
+    </div></form>`;
+    dlg.innerHTML = h;
+  };
+
+  renderForm();
+  const form = $('form', dlg);
+  form.addEventListener('submit', e => {
+    if (e.submitter?.value !== 'ok') return;
+    const fd = new FormData(form);
+    let importati = 0;
+
+    for (let idx = 0; idx < fatture.length; idx++) {
+      const f = fatture[idx];
+      let fornId = fd.get(`forn_${idx}`);
+      if (fornId === '__new__') {
+        const nuovoF = {
+          id: uid(),
+          nome: f.fornitore.nome,
+          indirizzo: f.fornitore.indirizzo || '',
+          piva: f.fornitore.piva || '',
+          telefono: '',
+          email: ''
+        };
+        S.fornitori.push(nuovoF);
+        fornId = nuovoF.id;
+      }
+      const fornObj = S.fornitori.find(x => x.id === fornId);
+
+      const dataR = String(fd.get(`data_${idx}`) || f.data || today());
+      const anno = dataR.slice(0, 4);
+      S.contatori[anno] = (S.contatori[anno] || 0) + 1;
+
+      const ivaVal = round2(parseNum(fd.get(`iva_${idx}`)) || 0);
+      const chiudiGen = fd.get(`chiudi_${idx}`) === 'on';
+
+      const r = {
+        id: uid(),
+        numero: S.contatori[anno],
+        anno,
+        data: dataR,
+        fornitoreId: fornId,
+        fornitoreSnap: fornObj ? { ...fornObj } : null,
+        righe: {},
+        pesate: [],
+        iva: ivaVal,
+        note: String(fd.get(`note_${idx}`) || '').trim(),
+        chiuso: chiudiGen,
+        pdfSalvato: null,
+        creato: Date.now()
+      };
+
+      f.righe.forEach((riga, rIdx) => {
+        if (fd.get(`use_${idx}_${rIdx}`) !== 'on') return;
+        let mId = fd.get(`merce_${idx}_${rIdx}`);
+        if (mId === '__new__') {
+          // Controlla se una precedente riga dello stesso import ha già creato questa merce
+          const esistente = trovaMerceCorrispondente(riga.nome);
+          if (esistente) {
+            mId = esistente.id;
+          } else {
+            const nuovaM = {
+              id: uid(),
+              nome: riga.nome,
+              prezzo: riga.prezzo,
+              storico: [{ dal: dataR, prezzo: riga.prezzo }]
+            };
+            S.merci.push(nuovaM);
+            mId = nuovaM.id;
+          }
+        }
+        const mObj = getMerce(mId);
+        r.righe[mId] = { nome: mObj?.nome || riga.nome, prezzo: riga.prezzo };
+        r.pesate.push({ id: uid(), merceId: mId, peso: riga.kg, ora: '' });
+      });
+
+      const g = creaNuovaGenerale(fornId);
+      r.generaleId = g.id;
+      if (chiudiGen) {
+        const pData = String(fd.get(`pData_${idx}`) || dataR);
+        const pImp = round2(parseNum(fd.get(`pImp_${idx}`)) || calcola(r).totale);
+        const pNote = String(fd.get(`pNote_${idx}`) || '').trim();
+        g.chiusa = true;
+        g.saldo = { data: pData, importo: pImp, note: pNote };
+      }
+
+      S.ritiri.push(r);
+      importati++;
+    }
+
+    save();
+    render();
+    toast(importati === 1 ? 'Fattura importata e chiusa ✔' : `${importati} fatture importate e chiuse ✔`);
+  });
+
+  dlg.showModal();
+}
+
 /* ---------------- Offline ---------------- */
 
-const FILE_ESSENZIALI = ['index.html', 'app.js', 'style.css', 'lib/jspdf.umd.min.js', 'lib/jspdf.plugin.autotable.min.js'];
+const FILE_ESSENZIALI = ['index.html', 'app.js', 'style.css', 'lib/jspdf.umd.min.js', 'lib/jspdf.plugin.autotable.min.js', 'lib/pdf.min.js', 'lib/pdf.worker.min.js'];
 
 async function verificaOffline() {
   const el = $('#statoOffline');

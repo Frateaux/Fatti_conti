@@ -2,7 +2,7 @@
 // Strategia "prima la cache": l'app si apre SEMPRE dalla copia salvata sul dispositivo
 // (istantanea, anche senza segnale) e si aggiorna in background quando c'è internet.
 // Aumentare VERSION ad ogni modifica dei file per aggiornare la cache.
-const VERSION = 'fatticonti-v10';
+const VERSION = 'fatticonti-v11';
 const FILES = [
   './',
   './index.html',
@@ -11,6 +11,8 @@ const FILES = [
   './manifest.json',
   './lib/jspdf.umd.min.js',
   './lib/jspdf.plugin.autotable.min.js',
+  './lib/pdf.min.js',
+  './lib/pdf.worker.min.js',
   './favicon.ico',
   './icons/favicon-32.png',
   './icons/icon-180.png',
