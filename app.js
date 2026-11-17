@@ -853,8 +853,16 @@ function viewRitiro(v, r) {
       <tfoot><tr><td>Totale</td><td>${c.colli}</td><td>${fmtKg(c.kg)}</td><td></td><td>${c.iva > 0 ? fmtEur(c.imponibile) : ''}</td></tr></tfoot>
     </table>
     ${c.iva > 0 || !r.chiuso ? `
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:.5rem;padding-top:.4rem;border-top:1px dashed var(--border);font-size:.9rem">
-        <span class="muted">IVA (€)</span>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.4rem;margin-top:.6rem;padding-top:.5rem;border-top:1px dashed var(--border);font-size:.9rem">
+        <div>
+          <span class="muted">IVA (€)</span>
+          ${!r.chiuso ? `<span style="display:inline-flex;gap:.25rem;margin-left:.4rem">
+            <button type="button" class="btn small iva-pct" data-pct="0" style="padding:.15rem .4rem;font-size:.75rem">0%</button>
+            <button type="button" class="btn small iva-pct" data-pct="4" style="padding:.15rem .4rem;font-size:.75rem">4%</button>
+            <button type="button" class="btn small iva-pct" data-pct="10" style="padding:.15rem .4rem;font-size:.75rem">10%</button>
+            <button type="button" class="btn small iva-pct" data-pct="22" style="padding:.15rem .4rem;font-size:.75rem">22%</button>
+          </span>` : ''}
+        </div>
         ${r.chiuso ? `<span>${fmtEur(c.iva)}</span>`
           : `<input class="price-input" id="inpIvaRitiro" inputmode="decimal" value="${(Number(r.iva) || 0).toLocaleString('it-IT', { minimumFractionDigits: 2 })}">`}
       </div>
@@ -964,6 +972,13 @@ function viewRitiro(v, r) {
     r.iva = round2(val);
     save(); render();
   });
+
+  $$('.iva-pct', v).forEach(btn => btn.addEventListener('click', () => {
+    const pct = Number(btn.dataset.pct) || 0;
+    r.iva = pct > 0 ? round2(c.imponibile * pct / 100) : 0;
+    save(); render();
+    toast(pct > 0 ? `IVA ${pct}% applicata (${fmtEur(r.iva)})` : 'IVA azzerata');
+  }));
 
   $('#note').addEventListener('change', e => { r.note = e.target.value; save(); });
 
